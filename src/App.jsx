@@ -8,20 +8,24 @@ import {
   Clock,
   Cpu,
   Dna,
+  ExternalLink,
   FileJson,
   FolderOpen,
   GitCompareArrows,
   GitBranch,
+  Info,
   LayoutDashboard,
   Moon,
   MoreHorizontal,
   Palette,
   Plus,
+  RefreshCw,
   Save,
   Settings,
   ShieldAlert,
   Sun,
   Terminal,
+  Radio,
   X,
   Zap,
 } from 'lucide-react';
@@ -48,10 +52,22 @@ const DEMO_SCAN = {
         branch: 'main',
         dirty: false,
         lastCommit: { sha: 'demo', date: new Date().toISOString(), message: 'Harden API middleware' },
+        changes: [],
+        recentCommits: [
+          { sha: 'demo-4', date: new Date().toISOString(), message: 'Harden API middleware', refs: ['HEAD -> main'] },
+          { sha: 'demo-3', date: '2026-04-29T17:12:00+02:00', message: 'Add launch profile risk summary', refs: [] },
+          { sha: 'demo-2', date: '2026-04-28T09:20:00+02:00', message: 'Document agent handoff flow', refs: [] },
+        ],
       },
       docs: { files: ['README.md', 'AGENTS.md'], hasReadme: true, agentContextFiles: ['AGENTS.md'] },
       env: { files: [], examples: ['.env.example'], hasEnvFiles: false, hasExample: true },
       ci: { present: true, paths: ['.github/workflows'] },
+      runtimeStatus: {
+        state: 'running',
+        checkedAt: new Date().toISOString(),
+        ports: [{ port: 5173, url: 'http://localhost:5173', command: 'vite', pid: 12042, confidence: 'high', source: 'demo data' }],
+        detail: 'Matched listening localhost ports to project process cwd.',
+      },
       aiReadiness: { score: 100, checks: [] },
       risks: [],
     },
@@ -72,10 +88,27 @@ const DEMO_SCAN = {
         branch: 'feature/auth-refactor',
         dirty: true,
         lastCommit: { sha: 'demo', date: '2026-04-28T11:00:00+02:00', message: 'Refactor auth shell' },
+        changes: [
+          { path: 'src/auth/session.ts', status: 'M' },
+          { path: 'src/components/LoginPanel.tsx', status: 'M' },
+          { path: 'src/routes/account.ts', status: 'A' },
+          { path: '.env', status: '??' },
+        ],
+        recentCommits: [
+          { sha: 'demo-9', date: '2026-04-28T11:00:00+02:00', message: 'Refactor auth shell', refs: ['HEAD -> feature/auth-refactor'] },
+          { sha: 'demo-8', date: '2026-04-26T15:40:00+02:00', message: 'Introduce account route guard', refs: [] },
+          { sha: 'demo-7', date: '2026-04-24T08:05:00+02:00', message: 'Polish onboarding states', refs: ['origin/main'] },
+        ],
       },
       docs: { files: ['README.md'], hasReadme: true, agentContextFiles: [] },
       env: { files: [{ name: '.env', ignoredByGit: false }], examples: [], hasEnvFiles: true, hasExample: false },
       ci: { present: false, paths: [] },
+      runtimeStatus: {
+        state: 'stopped',
+        checkedAt: new Date().toISOString(),
+        ports: [],
+        detail: 'No listening process cwd matched this project.',
+      },
       aiReadiness: { score: 40, checks: [] },
       risks: [
         { id: 'env_not_ignored', severity: 'high', title: 'Env file is not ignored by Git', detail: '.env is present and not ignored.' },
@@ -135,11 +168,6 @@ const APERTURE_THEMES = [
   { id: 'signal', label: 'Signal Desk', swatch: '#22d3ee', icon: Activity },
   { id: 'paper', label: 'Paper Trail', swatch: '#9a5b22', icon: FileJson },
   { id: 'terminal', label: 'Terminal Glow', swatch: '#34d399', icon: Terminal },
-];
-
-const CARD_VERSIONS = [
-  { id: 'original', label: 'Original' },
-  { id: 'experiment', label: 'Experiment' },
 ];
 
 const highestRisk = (project) => {
@@ -224,7 +252,8 @@ const projectArchetype = (project, isReference = false) => {
   if (project.package?.manager && Object.keys(scripts).length > 0) return 'Library';
   if (stack.includes('Python') || Object.keys(project.runtime?.files ?? {}).length > 0) return 'Script';
   if (!project.git?.isRepo && !project.package?.manager) return 'Experiment';
-  return 'Unknown';
+  if (project.git?.isRepo) return 'Repository';
+  return 'Project';
 };
 
 const conceptHelp = (type, { project, drift = [], isReference = false } = {}) => {
@@ -268,6 +297,53 @@ const conceptHelp = (type, { project, drift = [], isReference = false } = {}) =>
     },
   };
   return help[type] ?? { title: 'Scanner evidence', body: 'A factual observation from local scanner output.' };
+};
+
+const drawerTabHelp = {
+  overview: {
+    title: 'Overview',
+    body: 'Use this for the fastest read on project health: launch profile, skipped checks, setup readiness, and risks.',
+  },
+  source: {
+    title: 'Source',
+    body: 'Use this to inspect read-only Git state: branch, local changes, and recent commit history from the scanner.',
+  },
+  drift: {
+    title: 'Drift',
+    body: 'Use this to compare the project against the selected reference. Differences are advisory facts, not automatic failures.',
+  },
+  brief: {
+    title: 'Brief',
+    body: 'Use this when handing the project to an AI coding agent or returning later yourself. It compresses scanner facts into the minimum useful orientation.',
+  },
+};
+
+const briefExplainers = {
+  'Launch hygiene': {
+    title: 'Launch hygiene',
+    body: 'Stack-aware findings from scanned files, rules, routes, and sensitive patterns. Use this as a first review list before sharing or deploying.',
+    kind: 'info',
+  },
+  'Skipped checks': {
+    title: 'Skipped checks',
+    body: 'Checks Aperture intentionally did not run because the matching provider or surface was not detected. Skipped is not the same as passed.',
+    kind: 'info',
+  },
+  Reference: {
+    title: 'Reference',
+    body: 'Shows whether this project differs from your selected reference project in the areas Aperture compares.',
+    kind: 'question',
+  },
+  'Inspect first': {
+    title: 'Inspect first',
+    body: 'Suggested files to open before making changes. They come from docs, agent context files, runtime hints, env examples, and CI paths.',
+    kind: 'question',
+  },
+};
+
+const explainerForBriefLine = (line) => {
+  const label = String(line).split(':', 1)[0];
+  return briefExplainers[label] ?? null;
 };
 
 const readableValue = (value) => {
@@ -446,7 +522,7 @@ const readSeenAttentionIds = () => {
 const readManualProjects = () => {
   try {
     const saved = JSON.parse(localStorage.getItem(MANUAL_PROJECTS_STORAGE_KEY) ?? '[]');
-    return Array.isArray(saved) ? saved.filter((project) => project?.source === 'manual' && project.id && project.name) : [];
+    return Array.isArray(saved) ? saved.filter((project) => ['manual', 'browser-folder'].includes(project?.source) && project.id && project.name) : [];
   } catch {
     return [];
   }
@@ -459,6 +535,312 @@ const readProjectStates = () => {
   } catch {
     return {};
   }
+};
+
+const PROJECT_MARKER_FILES = ['package.json', 'go.mod', 'requirements.txt', 'pyproject.toml', 'Cargo.toml', 'pom.xml', 'build.gradle', 'composer.json'];
+const GENERATED_FOLDER_NAMES = new Set(['node_modules', 'dist', 'dist-company', 'dist-tools', 'build', 'coverage', 'out']);
+
+const pathParts = (path) => String(path).split('/').filter(Boolean);
+const basename = (path) => pathParts(path).at(-1) ?? '';
+const dirname = (path) => pathParts(path).slice(0, -1).join('/');
+const hasGeneratedFolder = (path) => pathParts(path).some((part) => GENERATED_FOLDER_NAMES.has(part));
+
+const ensureReadPermission = async (handle) => {
+  if (!handle?.queryPermission || !handle?.requestPermission) return true;
+  try {
+    if (await handle.queryPermission({ mode: 'read' }) === 'granted') return true;
+    return await handle.requestPermission({ mode: 'read' }) === 'granted';
+  } catch {
+    return false;
+  }
+};
+
+const readHandleFileText = async (directoryHandle, filename) => {
+  try {
+    if (!await ensureReadPermission(directoryHandle)) return '';
+    const fileHandle = await directoryHandle.getFileHandle(filename);
+    if (!await ensureReadPermission(fileHandle)) return '';
+    const file = await fileHandle.getFile();
+    return await file.text();
+  } catch {
+    return '';
+  }
+};
+
+const hasDirectoryEntry = async (directoryHandle, name) => {
+  try {
+    if (!await ensureReadPermission(directoryHandle)) return false;
+    await directoryHandle.getDirectoryHandle(name);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const hasFileEntry = async (directoryHandle, name) => {
+  try {
+    if (!await ensureReadPermission(directoryHandle)) return false;
+    await directoryHandle.getFileHandle(name);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const listDirectoryChildren = async (directoryHandle) => {
+  try {
+    if (!await ensureReadPermission(directoryHandle)) {
+      return { children: [], readable: false };
+    }
+    const children = [];
+    if (directoryHandle.values) {
+      for await (const entry of directoryHandle.values()) {
+        children.push(entry);
+      }
+    } else if (directoryHandle.entries) {
+      for await (const [, entry] of directoryHandle.entries()) {
+        children.push(entry);
+      }
+    }
+    return { children, readable: true };
+  } catch {
+    return { children: [], readable: false };
+  }
+};
+
+const isBrowserProjectHandle = async (directoryHandle) => {
+  const markers = ['package.json', 'go.mod', 'requirements.txt', 'pyproject.toml', 'Cargo.toml', 'pom.xml', 'build.gradle', 'composer.json'];
+  if (await hasDirectoryEntry(directoryHandle, '.git')) return true;
+  for (const marker of markers) {
+    if (await hasFileEntry(directoryHandle, marker)) return true;
+  }
+  return false;
+};
+
+const browserProjectFromHandle = async (directoryHandle, pathParts = []) => {
+  const packageText = await readHandleFileText(directoryHandle, 'package.json');
+  let packageJson = {};
+  try {
+    packageJson = packageText ? JSON.parse(packageText) : {};
+  } catch {
+    packageJson = {};
+  }
+  const dependencies = {
+    ...(packageJson.dependencies ?? {}),
+    ...(packageJson.devDependencies ?? {}),
+    ...(packageJson.peerDependencies ?? {}),
+    ...(packageJson.optionalDependencies ?? {}),
+  };
+  const dependencyNames = new Set(Object.keys(dependencies));
+  const languages = [];
+  const frameworks = [];
+  const tools = [];
+  if (packageText) languages.push('JavaScript');
+  if (dependencyNames.has('typescript')) languages.push('TypeScript');
+  if (dependencyNames.has('react')) frameworks.push('React');
+  if (dependencyNames.has('next')) frameworks.push('Next.js');
+  if (dependencyNames.has('vite')) tools.push('Vite');
+  if (await hasDirectoryEntry(directoryHandle, '.git')) tools.push('Git');
+  const hasReadme = await hasFileEntry(directoryHandle, 'README.md') || await hasFileEntry(directoryHandle, 'README.mdx');
+  const hasEnvExample = await hasFileEntry(directoryHandle, '.env.example') || await hasFileEntry(directoryHandle, '.env.sample');
+  const hasCi = await hasDirectoryEntry(directoryHandle, '.github');
+  const scripts = packageJson.scripts && typeof packageJson.scripts === 'object' ? packageJson.scripts : {};
+  const profile = {
+    framework: dependencyNames.has('next') ? 'next' : dependencyNames.has('vite') ? 'vite' : dependencyNames.has('react') ? 'react' : 'unknown',
+    backend: dependencyNames.has('firebase') ? 'firebase' : dependencyNames.has('@supabase/supabase-js') ? 'supabase' : 'unknown',
+    auth: dependencyNames.has('firebase') ? 'firebase' : dependencyNames.has('@supabase/supabase-js') ? 'supabase' : 'unknown',
+    database: dependencyNames.has('firebase') ? 'firestore' : dependencyNames.has('@supabase/supabase-js') ? 'supabase-postgres' : 'unknown',
+    storage: 'unknown',
+    payments: dependencyNames.has('stripe') ? 'stripe' : 'none',
+    aiApis: [
+      dependencyNames.has('openai') ? 'OpenAI' : null,
+      dependencyNames.has('@google/generative-ai') ? 'Gemini' : null,
+      dependencyNames.has('@anthropic-ai/sdk') ? 'Anthropic' : null,
+    ].filter(Boolean),
+  };
+  const pathLabel = [...pathParts, directoryHandle.name].filter(Boolean).join('/');
+  return {
+    id: `browser-${pathLabel}`.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
+    source: 'browser-folder',
+    name: directoryHandle.name,
+    path: pathLabel,
+    stack: { languages, frameworks, tools },
+    package: { manager: packageText ? 'browser-picked' : null, declared: packageJson.packageManager ?? null, lockfiles: [] },
+    scripts,
+    runtime: { engines: packageJson.engines ?? {}, files: {} },
+    git: { isRepo: tools.includes('Git'), branch: null, dirty: null, lastCommit: null, changes: [], recentCommits: [] },
+    docs: { files: hasReadme ? ['README.md'] : [], hasReadme, agentContextFiles: [] },
+    env: { files: [], examples: hasEnvExample ? ['.env.example'] : [], hasEnvFiles: false, hasExample: hasEnvExample },
+    ci: { present: hasCi, paths: hasCi ? ['.github'] : [] },
+    projectState: 'candidate',
+    runtimeStatus: {
+      state: 'unknown',
+      checkedAt: new Date().toISOString(),
+      ports: [],
+      detail: 'Browser folder selection cannot inspect local listening ports. Run scanner.py for runtime status.',
+    },
+    launchProfile: profile,
+    skippedChecks: [
+      { id: 'browser_limited_scan', title: 'Deep file checks skipped', reason: 'Browser folder selection can identify project candidates, but the Python scanner is still needed for full local evidence.' },
+      ...(profile.payments === 'none' ? [{ id: 'payment_bypass', title: 'Payment bypass checks skipped', reason: 'No payment provider was detected.' }] : []),
+    ],
+    aiReadiness: {
+      score: Math.round(([hasReadme, 'test' in scripts, 'lint' in scripts, hasEnvExample, hasCi].filter(Boolean).length / 5) * 100),
+      checks: [],
+    },
+    risks: [
+      ...(!hasReadme ? [{ id: 'missing_readme', severity: 'medium', title: 'README missing', detail: 'Browser folder scan did not find README.md.', category: 'setup' }] : []),
+      ...(!('test' in scripts) ? [{ id: 'missing_test_script', severity: 'medium', title: 'Test script missing', detail: 'No package test script was detected.', category: 'setup' }] : []),
+      ...(!hasCi ? [{ id: 'missing_ci', severity: 'low', title: 'CI config missing', detail: 'Browser folder scan did not find .github.', category: 'setup' }] : []),
+    ],
+  };
+};
+
+const scanBrowserDirectory = async (directoryHandle) => {
+  const maxProjects = 80;
+  const maxDepth = 4;
+  const queue = [{ handle: directoryHandle, pathParts: [], depth: 0 }];
+  const projects = [];
+  const seen = new Set();
+  const stats = {
+    visited: 0,
+    unreadable: 0,
+    projectMarkers: 0,
+    maxDepth,
+  };
+
+  while (queue.length && projects.length < maxProjects) {
+    const { handle, pathParts, depth } = queue.shift();
+    const key = [...pathParts, handle.name].join('/');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    stats.visited += 1;
+
+    if (await isBrowserProjectHandle(handle)) {
+      stats.projectMarkers += 1;
+      projects.push(await browserProjectFromHandle(handle, pathParts));
+      continue;
+    }
+
+    if (depth >= maxDepth) continue;
+
+    const { children, readable } = await listDirectoryChildren(handle);
+    if (!readable) {
+      stats.unreadable += 1;
+      continue;
+    }
+    for (const child of children) {
+      if (child.kind !== 'directory' || child.name.startsWith('.')) continue;
+      if (['node_modules', 'dist', 'dist-company', 'dist-tools', 'build', 'coverage', 'out'].includes(child.name)) continue;
+      queue.push({ handle: child, pathParts: [...pathParts, handle.name], depth: depth + 1 });
+    }
+  }
+
+  return { projects, stats };
+};
+
+const browserProjectsFromFileList = async (fileList) => {
+  const files = Array.from(fileList ?? []).filter((file) => file.webkitRelativePath || file.name);
+  const filesByPath = new Map(files.map((file) => [file.webkitRelativePath || file.name, file]));
+  const markerRoots = [...new Set(files
+    .map((file) => file.webkitRelativePath || file.name)
+    .filter((path) => PROJECT_MARKER_FILES.includes(basename(path)) && !hasGeneratedFolder(path))
+    .map(dirname)
+    .filter(Boolean))]
+    .sort((a, b) => a.length - b.length);
+
+  const projectRoots = markerRoots.filter((root) => !markerRoots.some((parent) => parent !== root && root.startsWith(`${parent}/`)));
+  const projects = [];
+
+  for (const root of projectRoots.slice(0, 80)) {
+    const name = basename(root);
+    const packageFile = filesByPath.get(`${root}/package.json`);
+    const packageText = packageFile ? await packageFile.text() : '';
+    let packageJson = {};
+    try {
+      packageJson = packageText ? JSON.parse(packageText) : {};
+    } catch {
+      packageJson = {};
+    }
+    const dependencies = {
+      ...(packageJson.dependencies ?? {}),
+      ...(packageJson.devDependencies ?? {}),
+      ...(packageJson.peerDependencies ?? {}),
+      ...(packageJson.optionalDependencies ?? {}),
+    };
+    const dependencyNames = new Set(Object.keys(dependencies));
+    const hasFile = (filename) => filesByPath.has(`${root}/${filename}`);
+    const languages = [];
+    const frameworks = [];
+    const tools = [];
+    if (packageText) languages.push('JavaScript');
+    if (dependencyNames.has('typescript') || hasFile('tsconfig.json')) languages.push('TypeScript');
+    if (dependencyNames.has('react')) frameworks.push('React');
+    if (dependencyNames.has('next')) frameworks.push('Next.js');
+    if (dependencyNames.has('vite')) tools.push('Vite');
+    const hasReadme = hasFile('README.md') || hasFile('README.mdx');
+    const hasEnvExample = hasFile('.env.example') || hasFile('.env.sample');
+    const hasCi = files.some((file) => (file.webkitRelativePath || file.name).startsWith(`${root}/.github/`));
+    const scripts = packageJson.scripts && typeof packageJson.scripts === 'object' ? packageJson.scripts : {};
+    const profile = {
+      framework: dependencyNames.has('next') ? 'next' : dependencyNames.has('vite') ? 'vite' : dependencyNames.has('react') ? 'react' : 'unknown',
+      backend: dependencyNames.has('firebase') ? 'firebase' : dependencyNames.has('@supabase/supabase-js') ? 'supabase' : 'unknown',
+      auth: dependencyNames.has('firebase') ? 'firebase' : dependencyNames.has('@supabase/supabase-js') ? 'supabase' : 'unknown',
+      database: dependencyNames.has('firebase') ? 'firestore' : dependencyNames.has('@supabase/supabase-js') ? 'supabase-postgres' : 'unknown',
+      storage: 'unknown',
+      payments: dependencyNames.has('stripe') ? 'stripe' : 'none',
+      aiApis: [
+        dependencyNames.has('openai') ? 'OpenAI' : null,
+        dependencyNames.has('@google/generative-ai') ? 'Gemini' : null,
+        dependencyNames.has('@anthropic-ai/sdk') ? 'Anthropic' : null,
+      ].filter(Boolean),
+    };
+
+    projects.push({
+      id: `browser-${root}`.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
+      source: 'browser-folder',
+      name,
+      path: root,
+      stack: { languages, frameworks, tools },
+      package: { manager: packageText ? 'browser-picked' : null, declared: packageJson.packageManager ?? null, lockfiles: [] },
+      scripts,
+      runtime: { engines: packageJson.engines ?? {}, files: {} },
+      git: { isRepo: false, branch: null, dirty: null, lastCommit: null, changes: [], recentCommits: [] },
+      docs: { files: hasReadme ? ['README.md'] : [], hasReadme, agentContextFiles: [] },
+      env: { files: [], examples: hasEnvExample ? ['.env.example'] : [], hasEnvFiles: false, hasExample: hasEnvExample },
+      ci: { present: hasCi, paths: hasCi ? ['.github'] : [] },
+      projectState: 'candidate',
+      runtimeStatus: {
+        state: 'unknown',
+        checkedAt: new Date().toISOString(),
+        ports: [],
+        detail: 'Browser folder selection cannot inspect local listening ports. Run scanner.py for runtime status.',
+      },
+      launchProfile: profile,
+      skippedChecks: [
+        { id: 'browser_limited_scan', title: 'Deep file checks skipped', reason: 'Browser folder selection can identify project candidates, but the Python scanner is still needed for full local evidence.' },
+        ...(profile.payments === 'none' ? [{ id: 'payment_bypass', title: 'Payment bypass checks skipped', reason: 'No payment provider was detected.' }] : []),
+      ],
+      aiReadiness: {
+        score: Math.round(([hasReadme, 'test' in scripts, 'lint' in scripts, hasEnvExample, hasCi].filter(Boolean).length / 5) * 100),
+        checks: [],
+      },
+      risks: [
+        ...(!hasReadme ? [{ id: 'missing_readme', severity: 'medium', title: 'README missing', detail: 'Browser folder scan did not find README.md.', category: 'setup' }] : []),
+        ...(!('test' in scripts) ? [{ id: 'missing_test_script', severity: 'medium', title: 'Test script missing', detail: 'No package test script was detected.', category: 'setup' }] : []),
+        ...(!hasCi ? [{ id: 'missing_ci', severity: 'low', title: 'CI config missing', detail: 'Browser folder scan did not find .github.', category: 'setup' }] : []),
+      ],
+    });
+  }
+
+  return {
+    projects,
+    stats: {
+      files: files.length,
+      markerMatches: markerRoots.length,
+      projectRoots: projectRoots.length,
+    },
+  };
 };
 
 const normalizeProjectState = (state) => (PROJECT_STATE_LABELS[state] ? state : 'candidate');
@@ -489,6 +871,83 @@ const launchProfileRows = (profile = {}) => [
   ['Payments', profile.payments ?? 'unknown'],
   ['AI APIs', profile.aiApis?.length ? profile.aiApis.join(', ') : 'none'],
 ];
+
+const primaryRuntimePort = (runtimeStatus) => runtimeStatus?.ports?.[0] ?? null;
+
+const runtimePortLabel = (port) => {
+  if (!port) return 'localhost';
+  if (port.url) {
+    try {
+      return new URL(port.url).host;
+    } catch {
+      return port.port ? `localhost:${port.port}` : String(port.url);
+    }
+  }
+  return port.port ? `localhost:${port.port}` : 'localhost';
+};
+
+const runtimeStatusLabel = (runtimeStatus) => {
+  const primary = primaryRuntimePort(runtimeStatus);
+  if (!runtimeStatus?.state) return 'Runtime unknown';
+  if (runtimeStatus.state === 'running' && primary) return `Running on ${runtimePortLabel(primary)}`;
+  if (runtimeStatus.state === 'unknown') return 'Runtime unknown';
+  return 'Not running';
+};
+
+const runtimeStatusDetail = (runtimeStatus) => {
+  const primary = primaryRuntimePort(runtimeStatus);
+  if (!runtimeStatus?.state) {
+    return 'This scanner output was generated before runtime port detection existed. Run scanner.py again to refresh localhost status.';
+  }
+  if (runtimeStatus.state === 'running' && primary) {
+    const process = [primary.command, primary.pid ? `pid ${primary.pid}` : null].filter(Boolean).join(' · ');
+    return [
+      process || null,
+      primary.confidence ? `Confidence: ${primary.confidence}` : null,
+      runtimeStatus.detail,
+    ].filter(Boolean).join('\n');
+  }
+  if (runtimeStatus.state === 'unknown') {
+    return runtimeStatus.detail || 'Aperture could not inspect listening localhost ports during the last scan.';
+  }
+  return runtimeStatus.detail || 'No matching listening localhost port was found during the last scan.';
+};
+
+const RuntimeStatusIndicator = ({ runtimeStatus, align = 'left', compact = false }) => {
+  const primary = primaryRuntimePort(runtimeStatus);
+  const isRunning = runtimeStatus?.state === 'running' && primary;
+  const state = !runtimeStatus?.state || runtimeStatus.state === 'unknown' ? 'unknown' : isRunning ? 'running' : 'stopped';
+  const stopCardClick = (event) => {
+    event.stopPropagation();
+  };
+
+  return (
+    <span className={`runtime-status runtime-status--${state} ${compact ? 'runtime-status--compact' : ''}`} onClick={stopCardClick}>
+      <button
+        type="button"
+        className="runtime-status__trigger"
+        aria-label={runtimeStatusLabel(runtimeStatus)}
+      >
+        <Radio size={compact ? 13 : 15} />
+        {!compact && <span>{runtimeStatusLabel(runtimeStatus)}</span>}
+      </button>
+      <span className={`runtime-status__panel ${align === 'right' ? 'runtime-status__panel--right' : ''}`}>
+        <strong>{runtimeStatusLabel(runtimeStatus)}</strong>
+        {isRunning ? (
+          <>
+            <a href={primary.url} target="_blank" rel="noreferrer" className="runtime-status__link" onClick={stopCardClick}>
+              {primary.url}
+              <ExternalLink size={13} />
+            </a>
+            <span>{createLineBreaks(runtimeStatusDetail(runtimeStatus))}</span>
+          </>
+        ) : (
+          <span>{createLineBreaks(runtimeStatusDetail(runtimeStatus))}</span>
+        )}
+      </span>
+    </span>
+  );
+};
 
 const launchHygieneRisks = (project) => (project.risks ?? [])
   .filter((risk) => risk.category && risk.category !== 'setup')
@@ -567,11 +1026,19 @@ const createManualProject = (form) => {
       branch: form.isGitRepo ? (form.branch.trim() || 'main') : null,
       dirty: false,
       lastCommit: null,
+      changes: [],
+      recentCommits: [],
     },
     projectState: 'tracked',
     docs,
     env,
     ci,
+    runtimeStatus: {
+      state: 'unknown',
+      checkedAt: new Date().toISOString(),
+      ports: [],
+      detail: 'Manual entries do not include local process evidence. Run scanner.py for runtime status.',
+    },
     launchProfile: {
       framework: form.frameworks.toLowerCase().includes('next') ? 'next' : form.tools.toLowerCase().includes('vite') ? 'vite' : form.frameworks.toLowerCase().includes('react') ? 'react' : 'unknown',
       backend: 'unknown',
@@ -625,22 +1092,25 @@ const createLineBreaks = (text) => String(text)
     </React.Fragment>
   ));
 
-const InfoPopover = ({ title, body, align = 'left' }) => (
-  <span className="info-popover" onClick={(event) => event.stopPropagation()}>
+const InfoPopover = ({ title, body, align = 'left', kind = 'question' }) => {
+  const Icon = kind === 'info' ? Info : CircleHelp;
+  return (
+  <span className={`info-popover info-popover--${kind}`} onClick={(event) => event.stopPropagation()}>
     <span
       className="info-popover__trigger"
       tabIndex={0}
-      role="img"
+      role="button"
       aria-label={`${title}: ${String(body).replace(/\n/g, ' ')}`}
     >
-      <CircleHelp size={13} />
+      <Icon size={13} />
     </span>
     <span className={`info-popover__panel info-popover__panel--${align}`} role="tooltip">
       <span className="info-popover__title">{title}</span>
       <span className="info-popover__body">{createLineBreaks(body)}</span>
     </span>
   </span>
-);
+  );
+};
 
 const riskBreakdown = (projects) => {
   const counts = projects
@@ -754,22 +1224,6 @@ const ThemeSwitcher = ({ theme, onThemeChange }) => {
   );
 };
 
-const CardVersionSwitcher = ({ version, onVersionChange }) => (
-  <div className="card-version-switcher" aria-label="Card version">
-    {CARD_VERSIONS.map((option) => (
-      <button
-        key={option.id}
-        type="button"
-        className={version === option.id ? 'is-active' : ''}
-        onClick={() => onVersionChange(option.id)}
-        aria-pressed={version === option.id}
-      >
-        {option.label}
-      </button>
-    ))}
-  </div>
-);
-
 const AttentionButton = ({ count, unseenCount, open, onClick }) => (
   <button
     type="button"
@@ -782,6 +1236,19 @@ const AttentionButton = ({ count, unseenCount, open, onClick }) => (
     <span className="hidden text-xs font-black uppercase tracking-widest lg:inline">Attention</span>
     <span className="attention-trigger__count">{count}</span>
     {unseenCount > 0 && <span className="attention-trigger__dot" />}
+  </button>
+);
+
+const AddProjectButton = ({ open, onClick }) => (
+  <button
+    type="button"
+    className={`attention-trigger ${open ? 'is-open' : ''}`}
+    onClick={onClick}
+    aria-label="Add project"
+    title="Add project"
+  >
+    <Plus size={18} />
+    <span className="hidden text-xs font-black uppercase tracking-widest lg:inline">Add</span>
   </button>
 );
 
@@ -898,8 +1365,8 @@ const ApertureAnalyzer = () => (
   </div>
 );
 
-const SetupCard = ({ icon: Icon, title, detail, children, disabled }) => (
-  <div className={`rounded-2xl border p-5 ${disabled ? 'border-slate-800 bg-slate-900/30 opacity-70' : 'border-indigo-500/30 bg-indigo-500/5'}`}>
+const SetupCard = ({ icon: Icon, title, detail, children, disabled, className = '' }) => (
+  <div className={`rounded-2xl border p-5 ${disabled ? 'border-slate-800 bg-slate-900/30 opacity-70' : 'border-indigo-500/30 bg-indigo-500/5'} ${className}`}>
     <div className="mb-4 flex items-start gap-3">
       <div className={`rounded-xl p-2 ${disabled ? 'bg-slate-800 text-slate-500' : 'bg-indigo-500/10 text-indigo-300'}`}>
         <Icon size={20} />
@@ -1032,52 +1499,125 @@ const ManualProjectDrawer = ({ open, onClose, onAddProject }) => {
   );
 };
 
-const EmptyState = ({ onAddManualProject }) => (
-  <div className="mx-auto flex min-h-[640px] max-w-5xl flex-col justify-center px-4 py-12">
-    <div className="mb-8 text-center">
-      <div className="mx-auto mb-5 flex h-14 w-14 items-center justify-center rounded-2xl bg-indigo-500/10 text-indigo-300 ring-1 ring-indigo-500/30">
-        <Zap size={26} />
-      </div>
-      <div className="text-xs font-black uppercase tracking-[0.35em] text-indigo-300">Aperture</div>
-      <h1 className="mt-3 text-4xl font-black tracking-tight text-slate-100">Map your first workspace</h1>
-      <p className="mx-auto mt-3 max-w-xl text-sm text-slate-500">
-        Start with a local folder. GitHub and GitLab connectors can come later.
-      </p>
-    </div>
+const AddProjectDrawer = ({ open, workspaceRoot, onClose, onAddManualProject }) => {
+  const scanRoot = workspaceRoot || '~/dev';
+  const scanRootArg = /\s/.test(scanRoot) ? `"${scanRoot.replace(/"/g, '\\"')}"` : scanRoot;
+  const scanCommand = `python3 scanner.py --root ${scanRootArg} --output public/projects.json`;
 
-    <div className="grid gap-4 lg:grid-cols-4">
-      <SetupCard icon={FolderOpen} title="Add local folder" detail="Recommended for the PoC. Scan repos already on disk.">
-        <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-3 font-mono text-xs text-slate-300">
-          python3 scanner.py --root ~/dev --output public/projects.json
+  return (
+    <>
+      <button className={`attention-drawer__scrim ${open ? 'is-open' : ''}`} type="button" aria-label="Close add project panel" onClick={onClose} aria-hidden={!open} tabIndex={open ? 0 : -1} />
+      <aside className={`attention-drawer add-project-drawer ${open ? 'is-open' : ''}`} aria-hidden={!open}>
+        <div className="attention-drawer__header">
+          <div>
+            <div className="text-xs font-black uppercase tracking-[0.24em] text-indigo-300">Add Project</div>
+            <h2 className="mt-1 text-xl font-black tracking-tight text-slate-100">Bring in new work</h2>
+            <p className="mt-1 text-xs font-bold text-slate-500">Rescan for real local evidence, or add a quick manual placeholder.</p>
+          </div>
+          <button type="button" className="attention-drawer__close" onClick={onClose} aria-label="Close add project panel">
+            <X size={18} />
+          </button>
         </div>
-        <div className="mt-3 text-xs text-slate-500">Then refresh the dashboard.</div>
-      </SetupCard>
 
-      <SetupCard icon={Plus} title="Add manually" detail="Create a local dashboard entry without scanning disk.">
-        <button type="button" onClick={onAddManualProject} className="manual-submit w-full justify-center">
-          <Plus size={16} /> New Project
-        </button>
-      </SetupCard>
+        <div className="attention-drawer__body custom-scrollbar">
+          <div className="add-project-flow">
+            <section className="add-project-card add-project-card--primary">
+              <div className="add-project-card__icon">
+                <RefreshCw size={20} />
+              </div>
+              <div>
+                <h3>Rescan workspace</h3>
+                <p>Best for a new local project. Run the scanner again, then refresh Aperture so the generated project list is reloaded.</p>
+              </div>
+              <div className="add-project-command">{scanCommand}</div>
+              <button type="button" className="manual-submit" onClick={() => window.location.reload()}>
+                <RefreshCw size={16} /> Refresh after rescan
+              </button>
+            </section>
 
-      <SetupCard icon={GitBranch} title="Connect GitHub" detail="Planned path for remote repo inventory." disabled>
-        <button className="w-full rounded-xl border border-slate-800 px-4 py-3 text-sm font-bold text-slate-500" disabled>
-          Coming later
-        </button>
-      </SetupCard>
+            <section className="add-project-card">
+              <div className="add-project-card__icon">
+                <Save size={20} />
+              </div>
+              <div>
+                <h3>Add manually</h3>
+                <p>Use this for a temporary entry, a repo outside the scanned root, or something that does not exist on disk yet.</p>
+              </div>
+              <button
+                type="button"
+                className="manual-submit"
+                onClick={() => {
+                  onClose();
+                  onAddManualProject();
+                }}
+              >
+                <Save size={16} /> Add manually
+              </button>
+            </section>
+          </div>
+        </div>
+      </aside>
+    </>
+  );
+};
 
-      <SetupCard icon={FileJson} title="Connect GitLab" detail="Planned for teams using GitLab-hosted repos." disabled>
-        <button className="w-full rounded-xl border border-slate-800 px-4 py-3 text-sm font-bold text-slate-500" disabled>
-          Coming later
-        </button>
-      </SetupCard>
+const EmptyState = ({ onAddManualProject, onShowScannerHelp }) => {
+  const [scanRoot, setScanRoot] = useState('~/dev');
+  const scanCommand = `python3 scanner.py --root ${scanRoot || '~/dev'} --output public/projects.json`;
+
+  return (
+    <div className="mx-auto flex min-h-[640px] max-w-5xl flex-col justify-center px-4 py-12">
+      <div className="mb-8 text-center">
+        <div className="mx-auto mb-5 flex h-14 w-14 items-center justify-center rounded-2xl bg-indigo-500/10 text-indigo-300 ring-1 ring-indigo-500/30">
+          <Zap size={26} />
+        </div>
+        <div className="text-xs font-black uppercase tracking-[0.35em] text-indigo-300">Aperture</div>
+        <h1 className="mt-3 text-4xl font-black tracking-tight text-slate-100">Point Aperture at your projects</h1>
+        <p className="mx-auto mt-3 max-w-xl text-sm text-slate-500">
+          Use the local scanner to map a folder without uploading a file snapshot into the browser.
+        </p>
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-4">
+        <SetupCard icon={FolderOpen} title="Local folder scan" detail="Run scanner.py against a projects folder, then refresh the dashboard." className="lg:col-span-2">
+          <button type="button" onClick={onShowScannerHelp} className="manual-submit w-full justify-center">
+            <Terminal size={16} /> Show Scanner Command
+          </button>
+          <div className="mt-3 text-xs font-bold text-slate-500">A browser folder picker would read thousands of files as an upload-style snapshot, so Aperture uses the local scanner instead.</div>
+        </SetupCard>
+
+        <SetupCard icon={Terminal} title="Run local scanner" detail="Use this when you want deeper Git, env, CI, and launch evidence." className="lg:col-span-2">
+          <label className="manual-field">
+            <span>Projects root</span>
+            <input value={scanRoot} onChange={(event) => setScanRoot(event.target.value)} placeholder="~/dev" />
+          </label>
+          <div className="mt-3 rounded-xl border border-slate-800 bg-slate-950/70 p-3 font-mono text-xs text-slate-300">
+            {scanCommand}
+          </div>
+          <div className="mt-3 text-xs text-slate-500">Refresh after the command writes public/projects.json.</div>
+        </SetupCard>
+
+        <SetupCard icon={Save} title="Add manually" detail="Create a local dashboard entry without scanning disk.">
+          <button type="button" onClick={onAddManualProject} className="manual-submit w-full justify-center">
+            <Save size={16} /> New Project
+          </button>
+        </SetupCard>
+
+        <SetupCard icon={GitBranch} title="Connect GitHub" detail="Planned path for remote repo inventory." disabled>
+          <button className="w-full rounded-xl border border-slate-800 px-4 py-3 text-sm font-bold text-slate-500" disabled>
+            Coming later
+          </button>
+        </SetupCard>
+
+        <SetupCard icon={FileJson} title="Connect GitLab" detail="Planned for teams using GitLab-hosted repos." disabled>
+          <button className="w-full rounded-xl border border-slate-800 px-4 py-3 text-sm font-bold text-slate-500" disabled>
+            Coming later
+          </button>
+        </SetupCard>
+      </div>
     </div>
-
-    <div className="mt-6 rounded-2xl border border-slate-800 bg-slate-900/40 p-4 text-sm text-slate-400">
-      <div className="flex items-center gap-2 font-bold text-slate-300"><Terminal size={16} /> Current startup path</div>
-      <p className="mt-1 text-slate-500">Aperture is local-first today: generate `public/projects.json`, then the dashboard becomes live.</p>
-    </div>
-  </div>
-);
+  );
+};
 
 const TechPill = ({ tech }) => (
   <span className={`rounded border px-2 py-0.5 text-[10px] font-bold uppercase tracking-tight ${techColors[tech] || techColors.default}`}>
@@ -1143,6 +1683,7 @@ const agentBriefLines = (project, drift = []) => {
     `Path: ${project.path}`,
     `Stack: ${stack.length ? stack.join(', ') : 'Unknown'}`,
     `Launch profile: ${launchProfileSummary(project.launchProfile)}`,
+    `Runtime: ${runtimeStatusLabel(project.runtimeStatus)}${primaryRuntimePort(project.runtimeStatus)?.url ? ` (${primaryRuntimePort(project.runtimeStatus).url})` : ''}`,
     `Package: ${project.package?.manager ?? 'None'}; scripts: ${scripts.length ? scripts.join(', ') : 'none detected'}`,
     `Git: ${project.git?.isRepo ? `${project.git?.branch ?? 'detached'}; ${project.git?.dirty ? 'dirty worktree' : 'clean worktree'}` : 'not a Git repo'}`,
     `Setup: ${setup.total ? `${setup.passed}/${setup.total} checks present` : `${project.aiReadiness?.score ?? 0}% coverage`}`,
@@ -1164,6 +1705,34 @@ const ExperimentalProjectCard = ({ project, onSelect, drift = [], isReference })
   const driftLabel = isReference ? 'Reference project' : drift.length ? `${drift.length} reference difference${drift.length === 1 ? '' : 's'}` : 'No reference differences';
   const scriptsCount = Object.keys(project.scripts ?? {}).length;
   const branchLabel = project.git?.branch ?? (project.git?.isRepo ? 'detached' : 'not git');
+  const signalItems = [
+    {
+      key: 'risk',
+      active: Boolean(risk),
+      className: risk ? 'is-active is-risk' : '',
+      label: riskLabel,
+      detail: riskMeaning(risk),
+      help: conceptHelp('risk', { project, drift, isReference }),
+    },
+    {
+      key: 'drift',
+      active: Boolean(drift.length) || isReference,
+      className: drift.length ? 'is-active is-drift' : '',
+      label: driftLabel,
+      detail: driftMeaning(drift),
+      help: conceptHelp('drift', { project, drift, isReference }),
+    },
+    {
+      key: 'dirty',
+      active: Boolean(project.git?.dirty),
+      className: project.git?.dirty ? 'is-active is-dirty' : '',
+      label: project.git?.dirty ? 'Dirty worktree' : 'Clean worktree',
+      detail: project.git?.dirty ? 'Uncommitted local changes' : project.git?.isRepo ? 'No uncommitted changes detected' : 'Not detected as Git',
+      help: conceptHelp('dirty', { project, drift, isReference }),
+    },
+  ];
+  const primarySignal = signalItems.find((item) => item.active) ?? signalItems[0];
+  const hiddenSignals = signalItems.filter((item) => item.key !== primarySignal.key);
 
   return (
     <article
@@ -1179,9 +1748,12 @@ const ExperimentalProjectCard = ({ project, onSelect, drift = [], isReference })
           {archetype}
           {isReference && <InfoPopover {...conceptHelp('reference', { project, drift, isReference })} />}
         </span>
-        <span className={`project-card-exp__state project-card-exp__state--${readiness >= 80 ? 'good' : readiness >= 50 ? 'watch' : 'risk'}`}>
-          {setup.label}
-          <InfoPopover {...conceptHelp('readiness', { project, drift, isReference })} align="right" />
+        <span className="project-card-exp__top-actions">
+          <RuntimeStatusIndicator runtimeStatus={project.runtimeStatus} align="right" compact />
+          <span className={`project-card-exp__state project-card-exp__state--${readiness >= 80 ? 'good' : readiness >= 50 ? 'watch' : 'risk'}`}>
+            {setup.label}
+            <InfoPopover {...conceptHelp('readiness', { project, drift, isReference })} align="right" />
+          </span>
         </span>
       </div>
 
@@ -1215,21 +1787,23 @@ const ExperimentalProjectCard = ({ project, onSelect, drift = [], isReference })
       </div>
 
       <div className="project-card-exp__signals">
-        <span className={risk ? 'is-active is-risk' : ''}>
-          {riskLabel}
-          <small>{riskMeaning(risk)}</small>
-          <InfoPopover {...conceptHelp('risk', { project, drift, isReference })} />
+        <span className={primarySignal.className}>
+          {primarySignal.label}
+          <small>{primarySignal.detail}</small>
+          <InfoPopover {...primarySignal.help} />
         </span>
-        <span className={drift.length ? 'is-active is-drift' : ''}>
-          {driftLabel}
-          <small>{driftMeaning(drift)}</small>
-          <InfoPopover {...conceptHelp('drift', { project, drift, isReference })} />
-        </span>
-        <span className={project.git?.dirty ? 'is-active is-dirty' : ''}>
-          {project.git?.dirty ? 'Dirty worktree' : 'Clean worktree'}
-          <small>{project.git?.dirty ? 'Uncommitted local changes' : project.git?.isRepo ? 'No uncommitted changes detected' : 'Not detected as Git'}</small>
-          <InfoPopover {...conceptHelp('dirty', { project, drift, isReference })} />
-        </span>
+        <details className="project-card-exp__signal-more">
+          <summary>{hiddenSignals.length} more signal{hiddenSignals.length === 1 ? '' : 's'}</summary>
+          <div>
+            {hiddenSignals.map((item) => (
+              <span key={item.key} className={item.className}>
+                {item.label}
+                <small>{item.detail}</small>
+                <InfoPopover {...item.help} />
+              </span>
+            ))}
+          </div>
+        </details>
       </div>
 
       <div className="project-card-exp__footer">
@@ -1357,10 +1931,29 @@ const ProjectCard = ({ project, onSelect, drift = [], isReference }) => {
   );
 };
 
-const DiscoveryReview = ({ candidates, onSetProjectState, onTrackAll, onDefer }) => {
+const DiscoveryReview = ({ candidates, onCommitProjectStates, onDefer }) => {
   const [openMenuId, setOpenMenuId] = useState(null);
-  const featured = candidates[0];
-  const remainingCount = Math.max(0, candidates.length - 1);
+  const [draftStates, setDraftStates] = useState({});
+  const stagedCount = Object.values(draftStates).filter(Boolean).length;
+  const workspaceCount = Object.values(draftStates).filter((state) => state === 'tracked' || state === 'reference').length;
+  const deferredCount = candidates.length - stagedCount;
+  const commitLabel = workspaceCount
+    ? `Finish setup · ${workspaceCount} selected`
+    : 'Finish with none selected';
+  const stageProject = (projectId, state) => {
+    setDraftStates((current) => ({ ...current, [projectId]: state }));
+    setOpenMenuId(null);
+  };
+  const trackAll = () => {
+    setDraftStates(Object.fromEntries(candidates.map((project) => [project.id, 'tracked'])));
+    setOpenMenuId(null);
+  };
+  const finishSetup = () => {
+    onCommitProjectStates(Object.fromEntries(candidates.map((project) => [project.id, draftStates[project.id] ?? 'sleeping'])));
+  };
+  const selectionLabel = workspaceCount
+    ? `${workspaceCount} selected for the workspace`
+    : 'Nothing selected yet';
 
   return (
     <>
@@ -1368,10 +1961,10 @@ const DiscoveryReview = ({ candidates, onSetProjectState, onTrackAll, onDefer })
       <section className="setup-wizard" role="dialog" aria-modal="true" aria-labelledby="setup-wizard-title">
         <div className="setup-wizard__hero">
           <div>
-            <div className="setup-wizard__eyebrow">Setup wizard</div>
+            <div className="setup-wizard__eyebrow">Discovery review</div>
             <h2 id="setup-wizard-title">Aperture found your workspace</h2>
             <p>
-              Start with the projects that matter now. Everything else can sleep quietly until you need it.
+              Pick what belongs in the workspace map, then finish setup. Aperture will not guess which project matters most.
             </p>
           </div>
           <div className="setup-wizard__count">
@@ -1380,53 +1973,31 @@ const DiscoveryReview = ({ candidates, onSetProjectState, onTrackAll, onDefer })
           </div>
         </div>
 
-        {featured && (
-          <div className="setup-wizard__featured">
-            <div className="setup-wizard__featured-copy">
-              <span>Suggested first project</span>
-              <h3>{featured.name}</h3>
-              <p>{featured.path}</p>
-            </div>
-            <div className="setup-wizard__featured-meta">
-              <span>{stackList(featured).slice(0, 3).join(' / ') || 'Unknown stack'}</span>
-              <span>{launchProfileSummary(featured.launchProfile)}</span>
-            </div>
-            <div className="setup-wizard__featured-actions">
-              <button type="button" className="setup-wizard__primary" onClick={() => onSetProjectState(featured.id, 'tracked')}>
-                Track project
-              </button>
-              <button type="button" className="setup-wizard__secondary" onClick={() => onSetProjectState(featured.id, 'reference')}>
-                Use as reference
-              </button>
-            </div>
-          </div>
-        )}
-
         <div className="setup-wizard__toolbar">
-          <span>{remainingCount ? `${remainingCount} more candidate${remainingCount === 1 ? '' : 's'} found` : 'No more candidates after this one'}</span>
+          <span>{candidates.length} candidate{candidates.length === 1 ? '' : 's'} found</span>
           <div>
-            <button type="button" onClick={onTrackAll}>Track all</button>
-            <button type="button" onClick={onDefer}>Review later</button>
+            <button type="button" onClick={trackAll}>Track all</button>
+            <button type="button" onClick={onDefer}>Skip all for now</button>
           </div>
         </div>
 
-        {remainingCount > 0 && (
+        {candidates.length > 0 && (
           <div className="setup-wizard__list">
-            {candidates.slice(1).map((project) => (
-              <article key={project.id} className="setup-candidate">
+            {candidates.map((project) => (
+              <article key={project.id} className={`setup-candidate ${draftStates[project.id] ? 'is-selected' : ''}`}>
                 <div className="setup-candidate__identity">
                   <h3>{project.name}</h3>
                   <p>{project.path}</p>
                 </div>
                 <div className="setup-candidate__meta">
                   <span>{stackList(project).slice(0, 2).join(' / ') || 'Unknown stack'}</span>
-                  <span>{(project.risks ?? []).length} finding{(project.risks ?? []).length === 1 ? '' : 's'}</span>
+                  <span>{draftStates[project.id] ? PROJECT_STATE_LABELS[draftStates[project.id]] : `${(project.risks ?? []).length} finding${(project.risks ?? []).length === 1 ? '' : 's'}`}</span>
                 </div>
                 <div className="setup-candidate__actions">
-                  <button type="button" className="setup-candidate__track" onClick={() => onSetProjectState(project.id, 'tracked')}>
+                  <button type="button" className="setup-candidate__track" onClick={() => stageProject(project.id, 'tracked')}>
                     Track
                   </button>
-                  <button type="button" onClick={() => onSetProjectState(project.id, 'reference')}>
+                  <button type="button" onClick={() => stageProject(project.id, 'reference')}>
                     Reference
                   </button>
                   <div className="setup-candidate__more">
@@ -1444,10 +2015,7 @@ const DiscoveryReview = ({ candidates, onSetProjectState, onTrackAll, onDefer })
                           <button
                             key={state}
                             type="button"
-                            onClick={() => {
-                              onSetProjectState(project.id, state);
-                              setOpenMenuId(null);
-                            }}
+                            onClick={() => stageProject(project.id, state)}
                           >
                             {PROJECT_STATE_LABELS[state]}
                           </button>
@@ -1460,18 +2028,36 @@ const DiscoveryReview = ({ candidates, onSetProjectState, onTrackAll, onDefer })
             ))}
           </div>
         )}
+
+        <div className="setup-wizard__finish">
+          <div>
+            <strong>{selectionLabel}</strong>
+            <span>{deferredCount ? `${deferredCount} candidate${deferredCount === 1 ? '' : 's'} will be marked sleeping.` : 'All candidates have a decision.'}</span>
+          </div>
+          <button type="button" className="setup-wizard__done" onClick={finishSetup}>
+            <CheckCircle2 size={15} />
+            {commitLabel}
+          </button>
+        </div>
       </section>
     </>
   );
 };
 
-const ProjectDrawer = ({ project, open, onClose, drift = [], referenceProject, isReference }) => {
+const ProjectDrawer = ({ project, open, onClose, drift = [], referenceProject, isReference, onRefreshScan, scanRefreshStatus }) => {
+  const [activeTab, setActiveTab] = useState('overview');
   const risks = project.risks ?? [];
   const launchRisks = launchHygieneRisks(project);
   const normalChecks = looksNormalChecks(project);
   const skippedChecks = project.skippedChecks ?? [];
   const checks = project.aiReadiness?.checks ?? [];
   const briefLines = agentBriefLines(project, drift);
+  const tabs = [
+    { id: 'overview', label: 'Overview', icon: ShieldAlert },
+    { id: 'source', label: 'Source', icon: GitBranch },
+    { id: 'drift', label: 'Drift', icon: GitCompareArrows },
+    { id: 'brief', label: 'Brief', icon: FileJson },
+  ];
   return (
     <>
       <button className={`attention-drawer__scrim ${open ? 'is-open' : ''}`} type="button" aria-label={`Close ${project.name}`} onClick={onClose} aria-hidden={!open} tabIndex={open ? 0 : -1} />
@@ -1480,6 +2066,7 @@ const ProjectDrawer = ({ project, open, onClose, drift = [], referenceProject, i
           <div>
             <h2 className="flex items-center gap-2 text-xl font-bold text-slate-100">
               <FolderOpen className="text-indigo-400" /> {project.name}
+              <RuntimeStatusIndicator runtimeStatus={project.runtimeStatus} align="right" compact />
             </h2>
             <p className="mt-1 font-mono text-sm text-slate-500">{project.path}</p>
           </div>
@@ -1488,7 +2075,122 @@ const ProjectDrawer = ({ project, open, onClose, drift = [], referenceProject, i
           </button>
         </div>
 
+        <nav className="project-drawer__tabs" aria-label={`${project.name} detail tabs`}>
+          {tabs.map((tab) => {
+            const Icon = tab.icon;
+            return (
+              <div key={tab.id} className={`project-drawer__tab ${activeTab === tab.id ? 'is-active' : ''}`}>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab(tab.id)}
+                >
+                  <Icon size={14} />
+                  {tab.label}
+                </button>
+                <InfoPopover {...drawerTabHelp[tab.id]} align={tab.id === 'brief' ? 'right' : 'left'} />
+              </div>
+            );
+          })}
+        </nav>
+
         <div className="project-drawer__body custom-scrollbar">
+          {activeTab === 'source' ? (
+            <ProjectSourceSignal project={project} onRefreshScan={onRefreshScan} refreshStatus={scanRefreshStatus} />
+          ) : activeTab === 'drift' ? (
+            <>
+              <section className="project-drawer__panel project-drawer__panel--readiness">
+                <div className="project-drawer__section-heading">
+                  <h3><Cpu size={14} /> Setup Readiness</h3>
+                  <span>{readinessSummary(project.aiReadiness).label}</span>
+                </div>
+                <div className="project-drawer__meter">
+                  <div style={{ width: `${project.aiReadiness?.score ?? 0}%` }} />
+                </div>
+                <div className="project-drawer__check-grid">
+                  {checks.length > 0 ? checks.map((check) => (
+                    <div key={check.id} className="project-drawer__check">
+                      {check.passed ? <CheckCircle2 size={15} className="text-emerald-400" /> : <AlertTriangle size={15} className="text-amber-400" />}
+                      <span>{check.label}</span>
+                    </div>
+                  )) : <span className="text-sm text-slate-500">No checklist details in this dataset.</span>}
+                </div>
+              </section>
+
+              <section>
+                <div className="project-drawer__section-heading project-drawer__section-heading--subtle">
+                  <h3>
+                    <GitCompareArrows size={14} /> Reference Differences
+                    <InfoPopover {...briefExplainers.Reference} />
+                  </h3>
+                  <span>
+                    vs. {referenceProject?.name ?? 'reference'}
+                  </span>
+                </div>
+                {isReference ? (
+                  <div className="project-drawer__panel project-drawer__empty">
+                    This project is the current reference. Other projects are compared against it.
+                  </div>
+                ) : drift.length > 0 ? (
+                  <div className="project-drawer__stack">
+                    {drift.map((item) => (
+                      <div key={item.id} className={`project-drawer__drift-card ${severityStyles[item.severity] || severityStyles.medium}`}>
+                        <div className="project-drawer__drift-head">
+                          <div>
+                            <div className="project-drawer__drift-title">{item.category}</div>
+                            <div className="project-drawer__drift-detail">{item.detail}</div>
+                            <div className="project-drawer__why">{driftWhyShown(item)}</div>
+                          </div>
+                          <div className="project-drawer__tag">Advisory</div>
+                        </div>
+                        <div className="project-drawer__diff-row">
+                          <span className="project-drawer__diff-value project-drawer__diff-value--current">{item.current}</span>
+                          <ChevronRight size={13} className="project-drawer__diff-arrow" />
+                          <span className="project-drawer__diff-value project-drawer__diff-value--reference">{item.reference}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="project-drawer__panel project-drawer__empty text-emerald-300">
+                    <CheckCircle2 className="mx-auto mb-2" /> Matches the reference on package, scripts, docs, env, CI, and runtime hints checked by Aperture.
+                  </div>
+                )}
+              </section>
+            </>
+          ) : activeTab === 'brief' ? (
+            <>
+              <section className="project-drawer__panel">
+                <div className="project-drawer__section-heading project-drawer__section-heading--subtle">
+                  <h3>
+                    <FileJson size={14} /> Agent Brief Preview
+                    <InfoPopover
+                      title="Agent brief"
+                      body="Use this when handing the project to an AI coding agent or returning later yourself. It is generated from observed project metadata, risks, drift, scripts, and suggested files."
+                    />
+                  </h3>
+                </div>
+                <div className="agent-brief-preview">
+                  {briefLines.map((line) => (
+                    <BriefLine key={line} line={line} />
+                  ))}
+                </div>
+              </section>
+
+              <section className="project-drawer__panel">
+                <div className="project-drawer__section-heading project-drawer__section-heading--subtle">
+                  <h3><FileJson size={14} /> Useful Commands</h3>
+                </div>
+                <div className="project-drawer__command-grid">
+                  {Object.entries(project.scripts ?? {}).length > 0 ? Object.entries(project.scripts).map(([name, command]) => (
+                    <div key={name} className="rounded-lg bg-slate-950/50 p-3 font-mono text-xs">
+                      <span className="text-indigo-300">{name}</span><span className="text-slate-600">: </span><span className="text-slate-300">{command}</span>
+                    </div>
+                  )) : <span className="text-sm text-slate-500">No package scripts detected.</span>}
+                </div>
+              </section>
+            </>
+          ) : (
+            <>
           <section className="project-drawer__stats">
             <div className="project-drawer__stat">
               <div className="project-drawer__label">Branch</div>
@@ -1501,6 +2203,12 @@ const ProjectDrawer = ({ project, open, onClose, drift = [], referenceProject, i
             <div className="project-drawer__stat">
               <div className="project-drawer__label">Last Commit</div>
               <div className="project-drawer__value">{formatDate(project.git?.lastCommit?.date)}</div>
+            </div>
+            <div className="project-drawer__stat">
+              <div className="project-drawer__label">Runtime</div>
+              <div className="project-drawer__value">
+                <RuntimeStatusIndicator runtimeStatus={project.runtimeStatus} align="right" />
+              </div>
             </div>
           </section>
 
@@ -1521,7 +2229,10 @@ const ProjectDrawer = ({ project, open, onClose, drift = [], referenceProject, i
 
           <section>
             <div className="project-drawer__section-heading project-drawer__section-heading--subtle">
-              <h3><AlertTriangle size={14} /> Fix Before Sharing</h3>
+              <h3>
+                <AlertTriangle size={14} /> Fix Before Sharing
+                <InfoPopover {...briefExplainers['Launch hygiene']} />
+              </h3>
               <span>{launchRisks.length} finding{launchRisks.length === 1 ? '' : 's'}</span>
             </div>
             <div className="project-drawer__stack">
@@ -1567,7 +2278,10 @@ const ProjectDrawer = ({ project, open, onClose, drift = [], referenceProject, i
 
           <section>
             <div className="project-drawer__section-heading project-drawer__section-heading--subtle">
-              <h3><CircleHelp size={14} /> Skipped Checks</h3>
+              <h3>
+                <CircleHelp size={14} /> Skipped Checks
+                <InfoPopover {...briefExplainers['Skipped checks']} />
+              </h3>
             </div>
             <div className="project-drawer__stack">
               {skippedChecks.length > 0 ? skippedChecks.map((check) => (
@@ -1605,6 +2319,7 @@ const ProjectDrawer = ({ project, open, onClose, drift = [], referenceProject, i
             <div className="project-drawer__section-heading project-drawer__section-heading--subtle">
               <h3>
                 <GitCompareArrows size={14} /> Reference Differences
+                <InfoPopover {...briefExplainers.Reference} />
               </h3>
               <span>
                 vs. {referenceProject?.name ?? 'reference'}
@@ -1662,11 +2377,17 @@ const ProjectDrawer = ({ project, open, onClose, drift = [], referenceProject, i
 
           <section className="project-drawer__panel">
             <div className="project-drawer__section-heading project-drawer__section-heading--subtle">
-              <h3><FileJson size={14} /> Agent Brief Preview</h3>
+              <h3>
+                <FileJson size={14} /> Agent Brief Preview
+                <InfoPopover
+                  title="Agent brief"
+                  body="Use this when handing the project to an AI coding agent or returning later yourself. It is generated from observed project metadata, risks, drift, scripts, and suggested files."
+                />
+              </h3>
             </div>
             <div className="agent-brief-preview">
               {briefLines.map((line) => (
-                <div key={line}>{line}</div>
+                <BriefLine key={line} line={line} />
               ))}
             </div>
           </section>
@@ -1683,6 +2404,8 @@ const ProjectDrawer = ({ project, open, onClose, drift = [], referenceProject, i
               )) : <span className="text-sm text-slate-500">No package scripts detected.</span>}
             </div>
           </section>
+            </>
+          )}
         </div>
       </aside>
     </>
@@ -1758,39 +2481,183 @@ const SettingsModal = ({ open, projects, allProjects, referenceProjectId, onRefe
   </>
 );
 
-const Sidebar = ({ settingsOpen, onOpenSettings }) => (
-  <aside className="flex w-20 flex-col items-center border-r border-slate-800 bg-slate-950 py-8 transition-all lg:w-64 lg:items-stretch">
-    <div className="mb-12 flex items-center gap-3 px-6">
-      <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-indigo-600">
-        <Zap size={20} className="fill-current text-white" />
+const gitChanges = (project) => Array.isArray(project.git?.changes) ? project.git.changes : [];
+const gitCommits = (project) => Array.isArray(project.git?.recentCommits) ? project.git.recentCommits : [];
+const dirtyCount = (project) => gitChanges(project).length || (project.git?.dirty ? 1 : 0);
+const sourceActivityDate = (project) => project.git?.lastCommit?.date ?? gitCommits(project)[0]?.date;
+const shortSha = (sha) => (sha ? String(sha).slice(0, 7) : 'unknown');
+
+const gitStatusMeta = (status = '') => {
+  const normalized = String(status).trim();
+  if (normalized.includes('??')) return { label: 'Untracked', tone: 'new' };
+  if (normalized.includes('A')) return { label: 'Added', tone: 'new' };
+  if (normalized.includes('D')) return { label: 'Deleted', tone: 'removed' };
+  if (normalized.includes('R')) return { label: 'Renamed', tone: 'moved' };
+  if (normalized.includes('M')) return { label: 'Modified', tone: 'modified' };
+  return { label: normalized || 'Changed', tone: 'modified' };
+};
+
+const sourceStateLabel = (project) => {
+  if (!project.git?.isRepo) return 'Not Git';
+  if (project.git?.dirty) return `${dirtyCount(project)} change${dirtyCount(project) === 1 ? '' : 's'}`;
+  return 'Clean';
+};
+
+const ProjectSourceSignal = ({ project, onRefreshScan, refreshStatus }) => {
+  const changes = gitChanges(project);
+  const commits = gitCommits(project);
+  const hasUncapturedDirtyState = project.git?.dirty && changes.length === 0;
+  const changedGroups = changes.reduce((groups, change) => {
+    const meta = gitStatusMeta(change.status);
+    return {
+      ...groups,
+      [meta.label]: [...(groups[meta.label] ?? []), { ...change, meta }],
+    };
+  }, {});
+
+  return (
+    <div className="source-signal">
+      <div className="source-signal__summary">
+        <div>
+          <span>Repository</span>
+          <strong>{project.git?.isRepo ? project.git?.branch ?? 'detached' : 'Not Git'}</strong>
+        </div>
+        <div>
+          <span>Worktree Pulse</span>
+          <strong>{sourceStateLabel(project)}</strong>
+        </div>
       </div>
-      <span className="hidden text-xl font-black tracking-tighter text-white lg:inline">APERTURE</span>
+
+      <section className="source-zone">
+        <div className="source-zone__heading">
+          <span>Repository Signal</span>
+          <small>Read-only</small>
+        </div>
+        <div className="source-git-overview">
+          <div>
+            <span>Branch</span>
+            <strong>{project.git?.branch ?? (project.git?.isRepo ? 'detached' : 'not git')}</strong>
+          </div>
+          <div>
+            <span>Worktree</span>
+            <strong className={project.git?.dirty ? 'is-dirty' : ''}>{project.git?.dirty ? 'Dirty' : project.git?.isRepo ? 'Clean' : 'Not Git'}</strong>
+          </div>
+          <div>
+            <span>Last commit</span>
+            <strong>{formatDate(sourceActivityDate(project))}</strong>
+          </div>
+        </div>
+      </section>
+
+      <section className="source-zone">
+        <div className="source-zone__heading">
+          <span>Change Lens</span>
+          <small>{project.name}</small>
+        </div>
+        {!project.git?.isRepo ? (
+          <div className="source-empty">This project is not detected as a Git repository.</div>
+        ) : changes.length > 0 ? (
+          <div className="source-change-groups">
+            {Object.entries(changedGroups).map(([label, items]) => (
+              <div key={label} className="source-change-group">
+                <div className="source-change-group__label">{label} <span>{items.length}</span></div>
+                {items.map((change) => (
+                  <button
+                    key={`${change.status}-${change.path}`}
+                    type="button"
+                    className={`source-change source-change--${change.meta.tone}`}
+                  >
+                    <span>{basename(change.path)}</span>
+                    <small>{dirname(change.path)}</small>
+                  </button>
+                ))}
+              </div>
+            ))}
+          </div>
+        ) : hasUncapturedDirtyState ? (
+          <div className="source-empty source-empty--dirty">
+            <strong>Git reports uncommitted changes, but this scan did not include the changed-file list.</strong>
+            <span>Run the local scanner, then refresh scan data here. A future Git connector could fill this directly.</span>
+            <div className="source-empty__actions">
+              <button type="button" onClick={onRefreshScan} disabled={refreshStatus === 'refreshing'}>
+                {refreshStatus === 'refreshing' ? 'Refreshing' : 'Refresh scan data'}
+              </button>
+              <em>{refreshStatus === 'updated' ? 'Scan data refreshed.' : refreshStatus === 'missing' ? 'No generated projects.json found.' : refreshStatus === 'error' ? 'Refresh failed.' : 'Git connector not connected.'}</em>
+            </div>
+          </div>
+        ) : (
+          <div className="source-empty">No local changes detected.</div>
+        )}
+      </section>
+
+      <section className="source-zone source-zone--pulse">
+        <div className="source-zone__heading">
+          <span>Pulse Graph</span>
+          <small>{formatDate(sourceActivityDate(project))}</small>
+        </div>
+        {commits.length > 0 ? (
+          <div className="source-pulse">
+            {commits.map((commit, index) => (
+              <button
+                key={`${commit.sha}-${index}`}
+                type="button"
+                className="source-commit"
+              >
+                <span className={`source-commit__node ${index === 0 ? 'is-head' : ''}`} />
+                <span className="source-commit__copy">
+                  <strong>{commit.message || 'Untitled commit'}</strong>
+                  <small>{shortSha(commit.sha)} · {formatDate(commit.date)}</small>
+                  {commit.refs?.length > 0 && (
+                    <span className="source-commit__refs">
+                      {commit.refs.slice(0, 2).map((ref) => <em key={ref}>{ref.replace('HEAD -> ', '')}</em>)}
+                    </span>
+                  )}
+                </span>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <div className="source-empty">{project.git?.isRepo ? 'No recent commit history captured. Run the local scanner again.' : 'Git history appears when a repo is detected.'}</div>
+        )}
+      </section>
+    </div>
+  );
+};
+
+const BriefLine = ({ line }) => {
+  const explainer = explainerForBriefLine(line);
+  return (
+    <div className="agent-brief-preview__line">
+      <span>{line}</span>
+      {explainer && <InfoPopover {...explainer} align="right" />}
+    </div>
+  );
+};
+
+const Sidebar = ({ settingsOpen, onOpenSettings }) => (
+  <aside className="flex w-20 flex-col items-center border-r border-slate-800 bg-slate-950 py-8 transition-all">
+    <div className="mb-12 flex h-10 w-10 items-center justify-center border border-indigo-500/30 bg-indigo-500/10 text-indigo-300">
+      <Zap size={20} />
     </div>
 
-    <nav className="flex-1 space-y-2 px-4">
+    <nav className="flex-1 space-y-2 px-3">
       {[
         { name: 'Workspace', icon: LayoutDashboard, active: !settingsOpen },
         { name: 'Attention', icon: AlertTriangle, active: false },
-        { name: 'Risk Radar', icon: ShieldAlert, active: false },
-        { name: 'Agent Briefs', icon: FileJson, active: false },
         { name: 'Settings', icon: Settings, active: settingsOpen, onClick: onOpenSettings },
       ].map((item) => (
-        <button key={item.name} type="button" onClick={item.onClick} className={`flex w-full items-center justify-center gap-4 rounded-xl p-3 transition-all lg:justify-start ${item.active ? 'bg-indigo-600/10 text-indigo-400' : 'text-slate-500 hover:bg-slate-900 hover:text-slate-300'}`}>
+        <button
+          key={item.name}
+          type="button"
+          title={item.name}
+          aria-label={item.name}
+          onClick={item.onClick}
+          className={`flex h-11 w-11 items-center justify-center transition-all ${item.active ? 'bg-indigo-600/10 text-indigo-400' : 'text-slate-500 hover:bg-slate-900 hover:text-slate-300'}`}
+        >
           <item.icon size={20} />
-          <span className="hidden text-sm font-bold lg:inline">{item.name}</span>
         </button>
       ))}
     </nav>
-
-    <div className="px-6">
-      <div className="hidden rounded-xl border border-slate-800 bg-slate-900 p-4 lg:block">
-        <div className="mb-1 text-[10px] font-black uppercase tracking-widest text-slate-500">MCP Bridge</div>
-        <div className="flex items-center gap-2 text-xs font-bold text-slate-400">
-          <div className="h-1.5 w-1.5 rounded-full bg-slate-600" />
-          Planned read-only
-        </div>
-      </div>
-    </div>
   </aside>
 );
 
@@ -1802,13 +2669,15 @@ export default function App() {
   const [theme, setTheme] = useState(() => localStorage.getItem('aperture-theme') || localStorage.getItem('aperture-theme-mode') || 'dark');
   const [attentionOpen, setAttentionOpen] = useState(false);
   const [insightDrawer, setInsightDrawer] = useState(null);
+  const [addProjectOpen, setAddProjectOpen] = useState(false);
   const [manualProjectFormOpen, setManualProjectFormOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [manualProjects, setManualProjects] = useState(readManualProjects);
   const [projectStates, setProjectStates] = useState(readProjectStates);
   const [seenAttentionIds, setSeenAttentionIds] = useState(readSeenAttentionIds);
   const [referenceProjectId, setReferenceProjectId] = useState(() => localStorage.getItem('aperture-reference-project') || '');
-  const [cardVersion, setCardVersion] = useState(() => localStorage.getItem('aperture-card-version') || 'original');
+  const [folderPickerMessage, setFolderPickerMessage] = useState('');
+  const [scanRefreshStatus, setScanRefreshStatus] = useState('idle');
   const projectCloseTimer = useRef(null);
 
   useEffect(() => {
@@ -1857,19 +2726,16 @@ export default function App() {
   }, [projectStates]);
 
   useEffect(() => {
-    localStorage.setItem('aperture-card-version', cardVersion);
-  }, [cardVersion]);
-
-  useEffect(() => {
-    if (!settingsOpen) return undefined;
+    if (!settingsOpen && !addProjectOpen) return undefined;
     const handleKeyDown = (event) => {
       if (event.key === 'Escape') {
         setSettingsOpen(false);
+        setAddProjectOpen(false);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [settingsOpen]);
+  }, [settingsOpen, addProjectOpen]);
 
   useEffect(() => () => {
     if (projectCloseTimer.current) {
@@ -1886,11 +2752,38 @@ export default function App() {
   const workspaceRootLabel = scan?.workspaceRoot ?? (manualProjects.length ? 'Manual entries' : '');
   const shouldShowDashboard = dataStatus === 'live' || manualProjects.length > 0;
   const displayedDataStatus = dataStatus === 'live' ? 'Generated projects.json' : dataStatus === 'loading' ? 'Analyzing' : manualProjects.length ? 'Manual entries' : 'No workspace yet';
+  const refreshScanData = async () => {
+    setScanRefreshStatus('refreshing');
+    try {
+      const response = await fetch('/projects.json', { cache: 'no-store' });
+      const contentType = response.headers.get('content-type') ?? '';
+      if (!response.ok || !contentType.includes('application/json')) {
+        throw new Error('missing');
+      }
+      const data = await response.json();
+      if (data?.schemaVersion !== 'aperture.scan.v1' || !Array.isArray(data.projects)) {
+        throw new Error('invalid');
+      }
+      setScan(data);
+      setDataStatus('live');
+      setSelectedProject((current) => {
+        if (!current) return current;
+        const refreshed = [...data.projects, ...manualProjects].find((project) => project.id === current.id);
+        return refreshed ? applyProjectState(refreshed, projectStates) : current;
+      });
+      setScanRefreshStatus('updated');
+    } catch (error) {
+      setScanRefreshStatus(error?.message === 'missing' ? 'missing' : 'error');
+    }
+  };
   const handleAddManualProject = (project) => {
     setManualProjects((current) => [...current, project]);
     setProjectStates((current) => ({ ...current, [project.id]: 'tracked' }));
     setDataStatus((status) => (status === 'loading' ? 'empty' : status));
     setManualProjectFormOpen(false);
+  };
+  const handleShowScannerHelp = () => {
+    setFolderPickerMessage('Run a workspace rescan, then refresh: python3 scanner.py --root "/path/to/projects" --output public/projects.json');
   };
   const setProjectState = (projectId, state) => {
     setProjectStates((current) => ({ ...current, [projectId]: normalizeProjectState(state) }));
@@ -1898,10 +2791,10 @@ export default function App() {
       setReferenceProjectId(projectId);
     }
   };
-  const trackAllCandidates = () => {
+  const commitCandidateStates = (statesByProject) => {
     setProjectStates((current) => ({
       ...current,
-      ...Object.fromEntries(candidateProjects.map((project) => [project.id, 'tracked'])),
+      ...Object.fromEntries(Object.entries(statesByProject).map(([projectId, state]) => [projectId, normalizeProjectState(state)])),
     }));
   };
   const deferCandidates = () => {
@@ -1926,7 +2819,7 @@ export default function App() {
     }
   }, [referenceProject?.id]);
   const driftMap = useMemo(() => createDriftMap(projects, referenceProject), [projects, referenceProject]);
-  const ProjectCardComponent = cardVersion === 'experiment' ? ExperimentalProjectCard : ProjectCard;
+  const ProjectCardComponent = ExperimentalProjectCard;
 
   const attentionItems = useMemo(() => createAttentionItems(projects, driftMap), [projects, driftMap]);
   const riskItems = useMemo(() => projects.flatMap((project) => (project.risks ?? []).map((risk) => ({
@@ -1992,6 +2885,10 @@ export default function App() {
     return { totalProjects: projects.length, riskCount, driftCount, dirtyCount, avgReadiness };
   }, [projects, driftMap]);
   const statSummaries = useMemo(() => statBreakdown(projects, driftMap), [projects, driftMap]);
+  const emptyWorkspaceTitle = allProjects.length ? 'No projects selected' : 'No projects found';
+  const emptyWorkspaceDetail = allProjects.length
+    ? 'Finish setup with tracked projects, or reopen Settings to move sleeping candidates into the workspace map.'
+    : 'The scanner output is live, but it did not include any projects. Try a broader root folder or add one manually.';
   const glossaryHelp = {
     title: 'Workspace Map glossary',
     body: [
@@ -2005,7 +2902,15 @@ export default function App() {
 
   return (
     <div className="aperture-app flex h-screen bg-slate-950 font-sans text-slate-300 selection:bg-indigo-500/30">
-      <Sidebar settingsOpen={settingsOpen} onOpenSettings={() => setSettingsOpen(true)} />
+      <Sidebar
+        projects={projects}
+        attentionItems={attentionItems}
+        unseenAttentionIds={unseenAttentionIds}
+        settingsOpen={settingsOpen}
+        onOpenSettings={() => setSettingsOpen(true)}
+        onOpenAttention={() => setAttentionOpen(true)}
+        onSelectProject={openProjectDrawer}
+      />
       <main className="flex flex-1 flex-col overflow-hidden">
         <header className="sticky top-0 z-10 flex min-h-20 flex-wrap items-center justify-between gap-4 border-b border-slate-800 bg-slate-950/50 px-4 backdrop-blur-md md:px-8">
           <div className="flex flex-1 items-center gap-3">
@@ -2017,13 +2922,9 @@ export default function App() {
               {displayedDataStatus}
             </div>
           </div>
-          <button type="button" className="attention-trigger" onClick={() => setManualProjectFormOpen(true)} aria-label="Add project manually" title="Add project manually">
-            <Plus size={18} />
-            <span className="hidden text-xs font-black uppercase tracking-widest lg:inline">Add</span>
-          </button>
-          <CardVersionSwitcher
-            version={cardVersion}
-            onVersionChange={setCardVersion}
+          <AddProjectButton
+            open={addProjectOpen}
+            onClick={() => setAddProjectOpen((value) => !value)}
           />
           <AttentionButton
             count={attentionItems.length}
@@ -2042,43 +2943,51 @@ export default function App() {
             onThemeChange={setTheme}
           />
         </header>
-
         <div className="flex-1 space-y-10 overflow-y-auto p-4 custom-scrollbar md:p-8">
           {dataStatus === 'loading' && !manualProjects.length && <ApertureAnalyzer />}
 
-          {!shouldShowDashboard && dataStatus === 'empty' && <EmptyState onAddManualProject={() => setManualProjectFormOpen(true)} />}
+          {!shouldShowDashboard && dataStatus === 'empty' && (
+            <EmptyState
+              onAddManualProject={() => setManualProjectFormOpen(true)}
+              onShowScannerHelp={handleShowScannerHelp}
+            />
+          )}
+          {folderPickerMessage && (
+            <div className="rounded-xl border border-sky-500/30 bg-sky-500/10 p-4 text-sm font-bold text-sky-300">
+              {folderPickerMessage}
+            </div>
+          )}
 
           {shouldShowDashboard && (
             <>
-          {candidateProjects.length > 0 && (
-            <DiscoveryReview
-              candidates={candidateProjects}
-              onSetProjectState={setProjectState}
-              onTrackAll={trackAllCandidates}
-              onDefer={deferCandidates}
-            />
-          )}
+              {candidateProjects.length > 0 && (
+                <DiscoveryReview
+                  candidates={candidateProjects}
+                  onCommitProjectStates={commitCandidateStates}
+                  onDefer={deferCandidates}
+                />
+              )}
 
-          <section className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-5">
-            <StatCard title="Projects Mapped" value={stats.totalProjects} icon={FolderOpen} summary={statSummaries.projects} help={{ title: 'Projects mapped', body: 'Projects currently shown from generated scanner output plus manual browser entries.' }} />
-            <StatCard title="Avg Setup Readiness" value={`${stats.avgReadiness}%`} icon={Cpu} tone="emerald" summary={statSummaries.readiness} help={conceptHelp('readiness')} />
-            <StatCard title="Risk Findings" value={stats.riskCount} icon={ShieldAlert} tone={stats.riskCount ? 'rose' : 'emerald'} summary={statSummaries.risks} help={conceptHelp('risk')} onClick={() => setInsightDrawer('risks')} />
-            <StatCard title="Dirty Worktrees" value={stats.dirtyCount} icon={GitBranch} tone={stats.dirtyCount ? 'rose' : 'emerald'} summary={statSummaries.dirty} help={conceptHelp('dirty')} onClick={() => setInsightDrawer('dirty')} />
-            <StatCard title="Reference Differences" value={stats.driftCount} icon={GitCompareArrows} tone={stats.driftCount ? 'rose' : 'emerald'} summary={statSummaries.drift} help={conceptHelp('drift')} onClick={() => setInsightDrawer('drift')} />
-          </section>
+              <section className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-5">
+                <StatCard title="Projects Mapped" value={stats.totalProjects} icon={FolderOpen} summary={statSummaries.projects} help={{ title: 'Projects mapped', body: 'Projects currently shown from generated scanner output plus manual entries.' }} />
+                <StatCard title="Avg Setup Readiness" value={`${stats.avgReadiness}%`} icon={Cpu} tone="emerald" summary={statSummaries.readiness} help={conceptHelp('readiness')} />
+                <StatCard title="Risk Findings" value={stats.riskCount} icon={ShieldAlert} tone={stats.riskCount ? 'rose' : 'emerald'} summary={statSummaries.risks} help={conceptHelp('risk')} onClick={() => setInsightDrawer('risks')} />
+                <StatCard title="Dirty Worktrees" value={stats.dirtyCount} icon={GitBranch} tone={stats.dirtyCount ? 'rose' : 'emerald'} summary={statSummaries.dirty} help={conceptHelp('dirty')} onClick={() => setInsightDrawer('dirty')} />
+                <StatCard title="Reference Differences" value={stats.driftCount} icon={GitCompareArrows} tone={stats.driftCount ? 'rose' : 'emerald'} summary={statSummaries.drift} help={conceptHelp('drift')} onClick={() => setInsightDrawer('drift')} />
+              </section>
 
-          <section>
-              <div className="mb-6 flex flex-col justify-between gap-4 md:flex-row md:items-center">
-                <div>
-                  <h2 className="flex items-center gap-3 text-2xl font-black tracking-tight text-slate-100">
-                    Workspace Map
-                    <span className="rounded bg-slate-800 px-2 py-0.5 text-[10px] uppercase tracking-tighter text-slate-500">Local-first</span>
-                    <InfoPopover {...glossaryHelp} />
-                  </h2>
-                  <p className="mt-1 text-sm italic text-slate-500">Factual scanner output from {workspaceRootLabel}.</p>
+              <section>
+                <div className="mb-6 flex flex-col justify-between gap-4 md:flex-row md:items-center">
+                  <div>
+                    <h2 className="flex items-center gap-3 text-2xl font-black tracking-tight text-slate-100">
+                      Workspace Map
+                      <span className="rounded bg-slate-800 px-2 py-0.5 text-[10px] uppercase tracking-tighter text-slate-500">Local-first</span>
+                      <InfoPopover {...glossaryHelp} />
+                    </h2>
+                    <p className="mt-1 text-sm italic text-slate-500">Factual scanner output from {workspaceRootLabel}.</p>
+                  </div>
+                  <div className="text-xs font-bold uppercase tracking-widest text-slate-500">Schema {scan?.schemaVersion ?? 'aperture.scan.v1'}</div>
                 </div>
-                <div className="text-xs font-bold uppercase tracking-widest text-slate-500">Schema {scan?.schemaVersion ?? 'aperture.scan.v1'}</div>
-              </div>
 
               {projects.length > 0 ? (
                 <div className="grid grid-cols-1 gap-6 md:grid-cols-2 2xl:grid-cols-3">
@@ -2095,22 +3004,38 @@ export default function App() {
               ) : (
                 <div className="rounded-2xl border border-dashed border-slate-800 p-12 text-center">
                   <FolderOpen className="mx-auto mb-4 text-slate-600" size={36} />
-                  <h3 className="text-lg font-bold text-slate-200">No projects mapped</h3>
-                  <p className="mt-2 text-sm text-slate-500">Generate a fresh scanner output.</p>
+                  <h3 className="text-lg font-bold text-slate-200">{emptyWorkspaceTitle}</h3>
+                  <p className="mx-auto mt-2 max-w-md text-sm text-slate-500">{emptyWorkspaceDetail}</p>
+                  <div className="mt-5 flex flex-wrap justify-center gap-3">
+                    {allProjects.length > 0 ? (
+                      <button type="button" onClick={() => setSettingsOpen(true)} className="manual-submit justify-center">
+                        <Settings size={16} /> Open Settings
+                      </button>
+                    ) : (
+                      <>
+                        <button type="button" onClick={handleShowScannerHelp} className="manual-submit justify-center">
+                          <Terminal size={16} /> Show Scanner Command
+                        </button>
+                        <button type="button" onClick={() => setManualProjectFormOpen(true)} className="manual-submit justify-center">
+                          <Save size={16} /> Add Manually
+                        </button>
+                      </>
+                    )}
+                  </div>
                 </div>
               )}
-          </section>
+              </section>
 
-          {scan?.scanErrors?.length > 0 && (
-            <section className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-5">
-              <h3 className="mb-3 font-bold text-amber-300">Scan Errors</h3>
-              <div className="space-y-2">
-                {scan.scanErrors.map((error) => (
-                  <div key={`${error.path}-${error.message}`} className="font-mono text-xs text-amber-100">{error.path}: {error.message}</div>
-                ))}
-              </div>
-            </section>
-          )}
+              {scan?.scanErrors?.length > 0 && (
+                <section className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-5">
+                  <h3 className="mb-3 font-bold text-amber-300">Scan Errors</h3>
+                  <div className="space-y-2">
+                    {scan.scanErrors.map((error) => (
+                      <div key={`${error.path}-${error.message}`} className="font-mono text-xs text-amber-100">{error.path}: {error.message}</div>
+                    ))}
+                  </div>
+                </section>
+              )}
             </>
           )}
         </div>
@@ -2120,6 +3045,13 @@ export default function App() {
         open={manualProjectFormOpen}
         onClose={() => setManualProjectFormOpen(false)}
         onAddProject={handleAddManualProject}
+      />
+
+      <AddProjectDrawer
+        open={addProjectOpen}
+        workspaceRoot={scan?.workspaceRoot}
+        onClose={() => setAddProjectOpen(false)}
+        onAddManualProject={() => setManualProjectFormOpen(true)}
       />
 
       <SettingsModal
@@ -2189,6 +3121,8 @@ export default function App() {
           drift={driftMap[selectedProject.id] ?? []}
           referenceProject={referenceProject}
           isReference={selectedProject?.id === referenceProject?.id}
+          onRefreshScan={refreshScanData}
+          scanRefreshStatus={scanRefreshStatus}
           onClose={closeProjectDrawer}
         />
       )}

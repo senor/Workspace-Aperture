@@ -50,7 +50,21 @@ Some folders with project markers are implementation components, not workspace p
       "sha": "...",
       "date": "2026-04-30T08:00:00+02:00",
       "message": "Commit message"
-    }
+    },
+    "changes": [
+      {
+        "path": "src/App.jsx",
+        "status": "M"
+      }
+    ],
+    "recentCommits": [
+      {
+        "sha": "...",
+        "date": "2026-04-30T08:00:00+02:00",
+        "message": "Commit message",
+        "refs": ["HEAD -> main", "origin/main"]
+      }
+    ]
   },
   "docs": {
     "files": ["README.md"],
@@ -75,6 +89,22 @@ Some folders with project markers are implementation components, not workspace p
     "storage": "firebase-storage",
     "payments": "none",
     "aiApis": []
+  },
+  "runtimeStatus": {
+    "state": "running",
+    "checkedAt": "2026-04-30T18:00:00+00:00",
+    "ports": [
+      {
+        "port": 5173,
+        "url": "http://localhost:5173",
+        "pid": 12345,
+        "command": "node",
+        "address": "127.0.0.1:5173",
+        "confidence": "high",
+        "source": "listening process cwd"
+      }
+    ],
+    "detail": "Matched listening localhost ports to project process cwd."
   },
   "skippedChecks": [
     {
@@ -106,8 +136,11 @@ Some folders with project markers are implementation components, not workspace p
 
 - `id` is deterministic for a project path and suitable for UI keys.
 - `stack`, `package`, `scripts`, `runtime`, `git`, `docs`, `env`, and `ci` are factual scanner observations.
+- `git.changes` is a bounded, read-only snapshot from `git status --porcelain`; `status` keeps the porcelain status code and `path` is the current path for renamed files.
+- `git.recentCommits` is a bounded, read-only snapshot from local `git log` for compact history and source-signal views.
 - `aiReadiness.score` is derived from explicit checklist items, not an opaque health score.
 - `launchProfile` is a stack-aware detection summary. It should be treated as a scanner hint, not a full dependency graph.
+- `runtimeStatus` is a best-effort snapshot of local listening TCP ports from the last scan. `running` means a listener was matched to the project path through process working-directory evidence; `stopped` means no match was found; `unknown` means the port probe could not run.
 - `skippedChecks` explains why Aperture did not run irrelevant checks for a project, such as Supabase RLS checks when Supabase is absent.
 - `risks` are local hygiene findings based on observable files, Git commands, and conservative static heuristics.
 - `scanErrors` records inaccessible folders or scanner failures without stopping the scan.

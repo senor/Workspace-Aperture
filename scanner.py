@@ -10,7 +10,9 @@ import argparse
 import hashlib
 import json
 import os
+import shlex
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -175,6 +177,186 @@ def run_command(path: Path, command: list[str]) -> tuple[int, str]:
         return result.returncode, result.stdout.strip()
     except (OSError, subprocess.SubprocessError):
         return 1, ""
+
+
+def parse_git_status_line(line: str) -> Optional[dict[str, str]]:
+    if not line:
+        return None
+    raw_status = line[:2]
+    path_text = line[3:].strip() if len(line) > 3 else ""
+    try:
+        path_parts = shlex.split(path_text)
+        if path_parts:
+            path_text = " ".join(path_parts)
+    except ValueError:
+        path_text = path_text.strip('"')
+    if " -> " in path_text:
+        path_text = path_text.rsplit(" -> ", 1)[-1]
+    status_code = raw_status.strip() or "?"
+    return {
+        "path": path_text,
+        "status": status_code,
+    }
+
+
+def collect_git_changes(path: Path, max_changes: int = 80) -> list[dict[str, str]]:
+    status_code, status = run_command(path, ["git", "status", "--porcelain"])
+    if status_code != 0 or not status:
+        return []
+    changes = [change for change in (parse_git_status_line(line) for line in status.splitlines()) if change]
+    return changes[:max_changes]
+
+
+def collect_recent_commits(path: Path, max_commits: int = 12) -> list[dict[str, Any]]:
+    command = [
+        "git",
+        "log",
+        f"-{max_commits}",
+        "--decorate=short",
+        "--pretty=format:%H%x1f%cI%x1f%s%x1f%D",
+    ]
+    commit_code, commit_output = run_command(path, command)
+    if commit_code != 0 or not commit_output:
+        return []
+
+    commits: list[dict[str, Any]] = []
+    for line in commit_output.splitlines():
+        parts = line.split("\x1f", 3)
+        if len(parts) < 3:
+            continue
+        refs = []
+        if len(parts) == 4 and parts[3].strip():
+            refs = [ref.strip() for ref in parts[3].split(",") if ref.strip()]
+        commits.append({
+            "sha": parts[0],
+            "date": parts[1],
+            "message": parts[2],
+            "refs": refs,
+        })
+    return commits
+
+
+def parse_port_from_lsof_name(name: str) -> Optional[int]:
+    endpoint = name.split("->", 1)[0].strip()
+    if ":" not in endpoint:
+        return None
+    port_text = endpoint.rsplit(":", 1)[-1]
+    try:
+        return int(port_text)
+    except ValueError:
+        return None
+
+
+def cwd_for_pid(pid: str) -> Optional[Path]:
+    proc_cwd = Path(f"/proc/{pid}/cwd")
+    try:
+        if proc_cwd.exists():
+            return proc_cwd.resolve()
+    except OSError:
+        pass
+
+    try:
+        result = subprocess.run(
+            ["lsof", "-a", "-p", pid, "-d", "cwd", "-Fn"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+    if result.returncode != 0:
+        return None
+    for line in result.stdout.splitlines():
+        if line.startswith("n") and len(line) > 1:
+            return Path(line[1:]).resolve()
+    return None
+
+
+def collect_listening_processes() -> tuple[list[dict[str, Any]], Optional[str]]:
+    """Collect local listening TCP ports with best-effort process cwd evidence."""
+    try:
+        result = subprocess.run(
+            ["lsof", "-nP", "-iTCP", "-sTCP:LISTEN", "-F", "pcn"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except FileNotFoundError:
+        return [], "lsof is not available on this machine."
+    except (OSError, subprocess.SubprocessError) as error:
+        return [], str(error)
+
+    if result.returncode != 0:
+        return [], result.stderr.strip() or "Listening port probe failed."
+
+    processes: list[dict[str, Any]] = []
+    current: dict[str, Any] = {}
+    for line in result.stdout.splitlines():
+        if not line:
+            continue
+        key, value = line[0], line[1:]
+        if key == "p":
+            current = {"pid": value}
+        elif key == "c" and current:
+            current["command"] = value
+        elif key == "n" and current:
+            port = parse_port_from_lsof_name(value)
+            if port is None:
+                continue
+            pid = str(current.get("pid", ""))
+            cwd = cwd_for_pid(pid) if pid else None
+            processes.append({
+                "pid": int(pid) if pid.isdigit() else pid,
+                "command": current.get("command"),
+                "address": value,
+                "port": port,
+                "url": f"http://localhost:{port}",
+                "cwd": str(cwd) if cwd else None,
+            })
+
+    return processes, None
+
+
+def collect_runtime_status(path: Path, listening_processes: list[dict[str, Any]], probe_error: Optional[str]) -> dict[str, Any]:
+    checked_at = datetime.now(timezone.utc).isoformat()
+    if probe_error:
+        return {
+            "state": "unknown",
+            "checkedAt": checked_at,
+            "ports": [],
+            "detail": probe_error,
+        }
+
+    project_root = path.resolve()
+    matches: list[dict[str, Any]] = []
+    for process in listening_processes:
+        cwd_text = process.get("cwd")
+        if not cwd_text:
+            continue
+        try:
+            Path(cwd_text).resolve().relative_to(project_root)
+        except ValueError:
+            continue
+        matches.append({
+            "port": process["port"],
+            "url": process["url"],
+            "pid": process["pid"],
+            "command": process.get("command"),
+            "address": process.get("address"),
+            "confidence": "high" if Path(cwd_text).resolve() == project_root else "medium",
+            "source": "listening process cwd",
+        })
+
+    unique_matches = list({(item["pid"], item["port"]): item for item in matches}.values())
+    return {
+        "state": "running" if unique_matches else "stopped",
+        "checkedAt": checked_at,
+        "ports": sorted(unique_matches, key=lambda item: item["port"]),
+        "detail": "Matched listening localhost ports to project process cwd." if unique_matches else "No listening process cwd matched this project.",
+    }
 
 
 def stable_id(path: Path) -> str:
@@ -609,6 +791,8 @@ def collect_git(path: Path) -> dict[str, Any]:
             "branch": None,
             "dirty": None,
             "lastCommit": None,
+            "changes": [],
+            "recentCommits": [],
         }
 
     _, branch = run_command(path, ["git", "branch", "--show-current"])
@@ -630,6 +814,8 @@ def collect_git(path: Path) -> dict[str, Any]:
         "branch": branch or None,
         "dirty": bool(status) if status_code == 0 else None,
         "lastCommit": last_commit,
+        "changes": collect_git_changes(path),
+        "recentCommits": collect_recent_commits(path),
     }
 
 
@@ -802,7 +988,7 @@ def collect_risks(docs: dict[str, Any], scripts: dict[str, str], env: dict[str, 
     return risks
 
 
-def scan_project(path: Path) -> dict[str, Any]:
+def scan_project(path: Path, listening_processes: Optional[list[dict[str, Any]]] = None, probe_error: Optional[str] = None) -> dict[str, Any]:
     package_json = read_json(path / "package.json") if (path / "package.json").exists() else {}
     text_files = collect_text_files(path)
     scripts = collect_scripts(package_json)
@@ -829,6 +1015,7 @@ def scan_project(path: Path) -> dict[str, Any]:
         "env": env,
         "ci": ci,
         "launchProfile": launch_profile,
+        "runtimeStatus": collect_runtime_status(path, listening_processes or [], probe_error),
         "skippedChecks": collect_skipped_checks(launch_profile),
         "aiReadiness": collect_ai_readiness(docs, scripts, env),
         "risks": risks,
@@ -837,6 +1024,7 @@ def scan_project(path: Path) -> dict[str, Any]:
 
 def scan_workspace(root: Path) -> dict[str, Any]:
     projects: list[dict[str, Any]] = []
+    listening_processes, probe_error = collect_listening_processes()
 
     try:
         root.resolve(strict=True)
@@ -854,7 +1042,7 @@ def scan_workspace(root: Path) -> dict[str, Any]:
         project_paths, errors = discover_project_paths(root)
     for project_path in project_paths:
         try:
-            projects.append(scan_project(project_path))
+            projects.append(scan_project(project_path, listening_processes, probe_error))
         except OSError as error:
             errors.append({"path": str(project_path.resolve()), "message": str(error)})
 
