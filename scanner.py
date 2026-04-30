@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Read-only workspace scanner for Aperture.
 
-The scanner walks one level below a workspace root, identifies project folders,
-and writes a deterministic JSON inventory that the dashboard and future MCP
-bridge can consume.
+The scanner walks a workspace root, unwraps one level of non-project grouping
+folders, identifies project folders, and writes a deterministic JSON inventory
+that the dashboard and future MCP bridge can consume.
 """
 
 import argparse
@@ -87,6 +87,16 @@ def is_project(path: Path) -> bool:
     return any(marker in names for marker in PROJECT_MARKERS)
 
 
+def visible_directories(path: Path) -> list[Path]:
+    try:
+        return sorted(
+            (item for item in path.iterdir() if item.is_dir() and not item.name.startswith(".")),
+            key=lambda item: item.name.lower(),
+        )
+    except OSError:
+        return []
+
+
 def firebase_component_paths(root: Path) -> set[Path]:
     """Return root-level Firebase component folders that are not standalone projects."""
     firebase_json = read_json(root / "firebase.json")
@@ -106,6 +116,43 @@ def firebase_component_paths(root: Path) -> set[Path]:
             continue
         paths.add(source_path)
     return paths
+
+
+def should_skip_component(path: Path, excluded_component_paths: set[Path]) -> bool:
+    return path.resolve() in excluded_component_paths and not (path / ".git").exists()
+
+
+def discover_project_paths(root: Path) -> tuple[list[Path], list[dict[str, str]]]:
+    projects: list[Path] = []
+    errors: list[dict[str, str]] = []
+    seen: set[Path] = set()
+    root_excluded_component_paths = firebase_component_paths(root)
+
+    def add_project(path: Path) -> None:
+        resolved = path.resolve()
+        if resolved in seen:
+            return
+        seen.add(resolved)
+        projects.append(path)
+
+    for child in visible_directories(root):
+        try:
+            if should_skip_component(child, root_excluded_component_paths):
+                continue
+            if is_project(child):
+                add_project(child)
+                continue
+
+            nested_excluded_component_paths = firebase_component_paths(child)
+            for nested in visible_directories(child):
+                if should_skip_component(nested, nested_excluded_component_paths):
+                    continue
+                if is_project(nested):
+                    add_project(nested)
+        except OSError as error:
+            errors.append({"path": str(child.resolve()), "message": str(error)})
+
+    return sorted(projects, key=lambda item: str(item.resolve()).lower()), errors
 
 
 def detect_package_manager(path: Path, package_json: dict[str, Any]) -> dict[str, Any]:
@@ -402,11 +449,9 @@ def scan_project(path: Path) -> dict[str, Any]:
 
 def scan_workspace(root: Path) -> dict[str, Any]:
     projects: list[dict[str, Any]] = []
-    errors: list[dict[str, str]] = []
-    excluded_component_paths = firebase_component_paths(root)
 
     try:
-        children = sorted(root.iterdir(), key=lambda item: item.name.lower())
+        root.resolve(strict=True)
     except OSError as error:
         return {
             "schemaVersion": SCHEMA_VERSION,
@@ -415,16 +460,12 @@ def scan_workspace(root: Path) -> dict[str, Any]:
             "scanErrors": [{"path": str(root), "message": str(error)}],
         }
 
-    for child in children:
-        if not child.is_dir() or child.name.startswith("."):
-            continue
+    project_paths, errors = discover_project_paths(root)
+    for project_path in project_paths:
         try:
-            if child.resolve() in excluded_component_paths and not (child / ".git").exists():
-                continue
-            if is_project(child):
-                projects.append(scan_project(child))
+            projects.append(scan_project(project_path))
         except OSError as error:
-            errors.append({"path": str(child.resolve()), "message": str(error)})
+            errors.append({"path": str(project_path.resolve()), "message": str(error)})
 
     return {
         "schemaVersion": SCHEMA_VERSION,

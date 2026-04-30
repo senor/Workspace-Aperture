@@ -68,7 +68,7 @@ The current prototype has two pieces:
 1. The Vite app renders the preserved React dashboard from `src/App.jsx` using mock data.
 2. `scanner.py` can scan a local development folder and generate `public/projects.json` using the documented scanner contract. The dashboard loads that file automatically when present.
 
-The dashboard fetches `/projects.json` at runtime and falls back to demo data when no generated scanner output exists.
+The dashboard fetches `/projects.json` at runtime and falls back to a concise setup state when no generated scanner output exists. Reference Project Drift is now available as a read-only comparison inside the dashboard.
 
 ## Canonical Docs
 

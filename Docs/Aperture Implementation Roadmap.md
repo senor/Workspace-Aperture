@@ -96,7 +96,7 @@ Aperture is a proof of concept:
 - Theme switcher: add a compact FOQ-style vibe control for mode, tint, and special themes.
 - Workspace Map: project inventory and factual metadata.
 - Today's Attention: prioritized notices for recent changes, dirty state, stale projects, missing docs, risks, and drift.
-- Reference Project Drift: compare projects against one selected reference project.
+- Reference Project Drift: implemented as an advisory UI comparison against one selected reference project.
 - AI-Readiness Checklist: docs, scripts, env example, and setup clarity.
 - Risk Radar: local hygiene checks such as env risk, missing example env, missing scripts, and missing CI.
 - Project lifecycle labels: active, sleeping, archived, experimental, production, and reference.

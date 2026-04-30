@@ -14,6 +14,8 @@ import {
   LayoutDashboard,
   Moon,
   Palette,
+  Plus,
+  Save,
   Settings,
   ShieldAlert,
   Sun,
@@ -116,6 +118,7 @@ const stackList = (project) => [
 ];
 
 const riskSeverityRank = { high: 3, medium: 2, low: 1 };
+const MANUAL_PROJECTS_STORAGE_KEY = 'aperture-manual-projects';
 
 const APERTURE_THEMES = [
   { id: 'dark', label: 'Dark', swatch: '#020617', icon: Moon },
@@ -278,6 +281,25 @@ const createAttentionItems = (projects, driftMap = {}) => {
     .slice(0, 6);
 };
 
+const splitList = (value) => value
+  .split(',')
+  .map((item) => item.trim())
+  .filter(Boolean);
+
+const parseScripts = (value) => Object.fromEntries(
+  value
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const separatorIndex = line.indexOf(':');
+      if (separatorIndex === -1) return [line, ''];
+      return [line.slice(0, separatorIndex).trim(), line.slice(separatorIndex + 1).trim()];
+    })
+    .filter(([name]) => Boolean(name))
+    .sort(([a], [b]) => a.localeCompare(b)),
+);
+
 const readSeenAttentionIds = () => {
   try {
     const saved = JSON.parse(localStorage.getItem('aperture-seen-attention') ?? '[]');
@@ -285,6 +307,90 @@ const readSeenAttentionIds = () => {
   } catch {
     return [];
   }
+};
+
+const readManualProjects = () => {
+  try {
+    const saved = JSON.parse(localStorage.getItem(MANUAL_PROJECTS_STORAGE_KEY) ?? '[]');
+    return Array.isArray(saved) ? saved.filter((project) => project?.source === 'manual' && project.id && project.name) : [];
+  } catch {
+    return [];
+  }
+};
+
+const createManualProject = (form) => {
+  const docs = {
+    files: form.hasReadme ? ['README.md'] : [],
+    hasReadme: form.hasReadme,
+    agentContextFiles: form.hasAgentContext ? ['AGENTS.md'] : [],
+  };
+  const scripts = parseScripts(form.scripts);
+  const env = {
+    files: [],
+    examples: form.hasEnvExample ? ['.env.example'] : [],
+    hasEnvFiles: false,
+    hasExample: form.hasEnvExample,
+  };
+  const ci = {
+    present: form.hasCi,
+    paths: form.hasCi ? ['manual'] : [],
+  };
+
+  return {
+    id: `manual-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+    source: 'manual',
+    name: form.name.trim(),
+    path: form.path.trim() || 'Manual entry',
+    stack: {
+      languages: splitList(form.languages),
+      frameworks: splitList(form.frameworks),
+      tools: splitList(form.tools),
+    },
+    package: {
+      manager: form.packageManager || null,
+      declared: null,
+      lockfiles: form.packageManager ? [form.packageManager] : [],
+    },
+    scripts,
+    runtime: { engines: {}, files: {} },
+    git: {
+      isRepo: form.isGitRepo,
+      branch: form.isGitRepo ? (form.branch.trim() || 'main') : null,
+      dirty: false,
+      lastCommit: null,
+    },
+    docs,
+    env,
+    ci,
+    aiReadiness: collectManualReadiness(docs, scripts, env),
+    risks: collectManualRisks(docs, scripts, ci),
+  };
+};
+
+const collectManualReadiness = (docs, scripts, env) => {
+  const checks = [
+    { id: 'readme', label: 'README present', passed: docs.hasReadme, evidence: docs.files },
+    { id: 'agent_context', label: 'Agent context present', passed: Boolean(docs.agentContextFiles.length), evidence: docs.agentContextFiles },
+    { id: 'test_script', label: 'Test command present', passed: 'test' in scripts, evidence: scripts.test },
+    { id: 'lint_script', label: 'Lint command present', passed: 'lint' in scripts, evidence: scripts.lint },
+    { id: 'env_example', label: 'Environment example present when env files exist', passed: true, evidence: env.examples },
+  ];
+  const passed = checks.filter((check) => check.passed).length;
+  return { score: Math.round((passed / checks.length) * 100), checks };
+};
+
+const collectManualRisks = (docs, scripts, ci) => {
+  const risks = [];
+  if (!docs.hasReadme) {
+    risks.push({ id: 'missing_readme', severity: 'medium', title: 'README missing', detail: 'Manual entry says this project has no README file.' });
+  }
+  if (!('test' in scripts)) {
+    risks.push({ id: 'missing_test_script', severity: 'medium', title: 'Test script missing', detail: 'No test script was entered manually.' });
+  }
+  if (!ci.present) {
+    risks.push({ id: 'missing_ci', severity: 'low', title: 'CI config missing', detail: 'Manual entry says no CI configuration is present.' });
+  }
+  return risks;
 };
 
 const StatCard = ({ title, value, icon: Icon, tone = 'indigo', onClick }) => {
@@ -416,6 +522,49 @@ const AttentionDrawer = ({ open, items, unseenIds, onClose, onSelectProject }) =
   </>
 );
 
+const InsightDrawer = ({ open, title, subtitle, emptyLabel, items, onClose, onSelectProject }) => (
+  <>
+    {open && <button className="attention-drawer__scrim" type="button" aria-label={`Close ${title}`} onClick={onClose} />}
+    <aside className={`attention-drawer ${open ? 'is-open' : ''}`} aria-hidden={!open}>
+      <div className="attention-drawer__header">
+        <div>
+          <div className="text-xs font-black uppercase tracking-[0.24em] text-indigo-300">Workspace Signal</div>
+          <h2 className="mt-1 text-xl font-black tracking-tight text-slate-100">{title}</h2>
+          <p className="mt-1 text-xs font-bold text-slate-500">{subtitle}</p>
+        </div>
+        <button type="button" className="attention-drawer__close" onClick={onClose} aria-label={`Close ${title}`}>
+          <X size={18} />
+        </button>
+      </div>
+
+      <div className="attention-drawer__body custom-scrollbar">
+        {items.length > 0 ? items.map((item) => (
+          <button
+            key={item.id}
+            onClick={() => onSelectProject(item.project)}
+            className={`attention-item ${severityStyles[item.severity] || severityStyles.low}`}
+          >
+            <div className="flex items-start gap-3">
+              {item.icon === 'dirty' ? <GitBranch size={18} /> : item.severity === 'high' ? <ShieldAlert size={18} /> : <AlertTriangle size={18} />}
+              <div>
+                <div className="text-sm font-bold">{item.title}</div>
+                <div className="mt-1 text-xs opacity-80">{item.detail}</div>
+                <div className="mt-2 flex items-center gap-1 text-[10px] font-black uppercase tracking-widest opacity-70">
+                  {item.project.name} <ChevronRight size={12} />
+                </div>
+              </div>
+            </div>
+          </button>
+        )) : (
+          <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-6 text-center text-emerald-300">
+            <CheckCircle2 className="mx-auto mb-2" /> {emptyLabel}
+          </div>
+        )}
+      </div>
+    </aside>
+  </>
+);
+
 const ApertureAnalyzer = () => (
   <div className="flex min-h-[520px] items-center justify-center">
     <div className="relative flex flex-col items-center text-center">
@@ -449,7 +598,126 @@ const SetupCard = ({ icon: Icon, title, detail, children, disabled }) => (
   </div>
 );
 
-const EmptyState = () => (
+const ManualProjectDrawer = ({ open, onClose, onAddProject }) => {
+  const [form, setForm] = useState({
+    name: '',
+    path: '',
+    languages: '',
+    frameworks: '',
+    tools: '',
+    packageManager: 'npm',
+    scripts: 'dev: npm run dev\nbuild: npm run build',
+    isGitRepo: true,
+    branch: 'main',
+    hasReadme: true,
+    hasAgentContext: false,
+    hasCi: false,
+    hasEnvExample: false,
+  });
+
+  const setField = (field, value) => setForm((current) => ({ ...current, [field]: value }));
+  const canSubmit = form.name.trim().length > 0;
+
+  const handleSubmit = (event) => {
+    event.preventDefault();
+    if (!canSubmit) return;
+    onAddProject(createManualProject(form));
+    setForm((current) => ({ ...current, name: '', path: '' }));
+  };
+
+  return (
+    <>
+      {open && <button className="attention-drawer__scrim" type="button" aria-label="Close manual project form" onClick={onClose} />}
+      <aside className={`attention-drawer manual-project-drawer ${open ? 'is-open' : ''}`} aria-hidden={!open}>
+        <div className="attention-drawer__header">
+          <div>
+            <div className="text-xs font-black uppercase tracking-[0.24em] text-indigo-300">Manual Project</div>
+            <h2 className="mt-1 text-xl font-black tracking-tight text-slate-100">Add project</h2>
+            <p className="mt-1 text-xs font-bold text-slate-500">Saved in this browser and merged with scanner output.</p>
+          </div>
+          <button type="button" className="attention-drawer__close" onClick={onClose} aria-label="Close manual project form">
+            <X size={18} />
+          </button>
+        </div>
+
+        <form className="attention-drawer__body custom-scrollbar space-y-5" onSubmit={handleSubmit}>
+          <label className="manual-field">
+            <span>Name</span>
+            <input value={form.name} onChange={(event) => setField('name', event.target.value)} placeholder="My Project" autoFocus />
+          </label>
+
+          <label className="manual-field">
+            <span>Path or URL</span>
+            <input value={form.path} onChange={(event) => setField('path', event.target.value)} placeholder="~/dev/my-project" />
+          </label>
+
+          <div className="grid gap-3 md:grid-cols-2">
+            <label className="manual-field">
+              <span>Languages</span>
+              <input value={form.languages} onChange={(event) => setField('languages', event.target.value)} placeholder="TypeScript, Python" />
+            </label>
+            <label className="manual-field">
+              <span>Package</span>
+              <select value={form.packageManager} onChange={(event) => setField('packageManager', event.target.value)}>
+                <option value="">None</option>
+                <option value="npm">npm</option>
+                <option value="pnpm">pnpm</option>
+                <option value="yarn">yarn</option>
+                <option value="bun">bun</option>
+              </select>
+            </label>
+          </div>
+
+          <label className="manual-field">
+            <span>Frameworks</span>
+            <input value={form.frameworks} onChange={(event) => setField('frameworks', event.target.value)} placeholder="React, Next.js" />
+          </label>
+
+          <label className="manual-field">
+            <span>Tools</span>
+            <input value={form.tools} onChange={(event) => setField('tools', event.target.value)} placeholder="Git, Tailwind CSS, Prisma" />
+          </label>
+
+          <label className="manual-field">
+            <span>Scripts</span>
+            <textarea value={form.scripts} onChange={(event) => setField('scripts', event.target.value)} rows={5} placeholder="test: npm test" />
+          </label>
+
+          <div className="rounded-xl border border-slate-800 bg-slate-800/20 p-4">
+            <div className="mb-3 text-xs font-bold uppercase tracking-widest text-slate-500">Signals</div>
+            <div className="grid gap-3 md:grid-cols-2">
+              {[
+                ['isGitRepo', 'Git repo'],
+                ['hasReadme', 'README'],
+                ['hasAgentContext', 'Agent context'],
+                ['hasCi', 'CI present'],
+                ['hasEnvExample', 'Env example'],
+              ].map(([field, label]) => (
+                <label key={field} className="manual-check">
+                  <input type="checkbox" checked={form[field]} onChange={(event) => setField(field, event.target.checked)} />
+                  <span>{label}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+
+          {form.isGitRepo && (
+            <label className="manual-field">
+              <span>Branch</span>
+              <input value={form.branch} onChange={(event) => setField('branch', event.target.value)} placeholder="main" />
+            </label>
+          )}
+
+          <button type="submit" className="manual-submit" disabled={!canSubmit}>
+            <Save size={16} /> Add Project
+          </button>
+        </form>
+      </aside>
+    </>
+  );
+};
+
+const EmptyState = ({ onAddManualProject }) => (
   <div className="mx-auto flex min-h-[640px] max-w-5xl flex-col justify-center px-4 py-12">
     <div className="mb-8 text-center">
       <div className="mx-auto mb-5 flex h-14 w-14 items-center justify-center rounded-2xl bg-indigo-500/10 text-indigo-300 ring-1 ring-indigo-500/30">
@@ -462,12 +730,18 @@ const EmptyState = () => (
       </p>
     </div>
 
-    <div className="grid gap-4 lg:grid-cols-3">
+    <div className="grid gap-4 lg:grid-cols-4">
       <SetupCard icon={FolderOpen} title="Add local folder" detail="Recommended for the PoC. Scan repos already on disk.">
         <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-3 font-mono text-xs text-slate-300">
           python3 scanner.py --root ~/dev --output public/projects.json
         </div>
         <div className="mt-3 text-xs text-slate-500">Then refresh the dashboard.</div>
+      </SetupCard>
+
+      <SetupCard icon={Plus} title="Add manually" detail="Create a local dashboard entry without scanning disk.">
+        <button type="button" onClick={onAddManualProject} className="manual-submit w-full justify-center">
+          <Plus size={16} /> New Project
+        </button>
       </SetupCard>
 
       <SetupCard icon={GitBranch} title="Connect GitHub" detail="Planned path for remote repo inventory." disabled>
@@ -577,32 +851,37 @@ const ProjectCard = ({ project, onSelect, drift = [], isReference }) => {
             <span>{formatDate(project.git?.lastCommit?.date)}</span>
           </div>
         </div>
-        <StatusDot project={project} />
+        <div className="flex items-center gap-3">
+          <span className="flex items-center gap-1 text-[10px] font-black uppercase tracking-widest text-slate-500 transition-colors group-hover:text-indigo-400">
+            Open <ChevronRight size={12} />
+          </span>
+          <StatusDot project={project} />
+        </div>
       </div>
     </button>
   );
 };
 
-const ProjectModal = ({ project, onClose, drift = [], referenceProject, isReference }) => {
-  if (!project) return null;
+const ProjectDrawer = ({ project, onClose, drift = [], referenceProject, isReference }) => {
   const risks = project.risks ?? [];
   const checks = project.aiReadiness?.checks ?? [];
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm">
-      <div className="max-h-[90vh] w-full max-w-3xl overflow-hidden rounded-2xl border border-slate-800 bg-slate-900 shadow-2xl">
-        <div className="flex items-center justify-between border-b border-slate-800 bg-slate-900/50 p-6">
+    <>
+      <button className="attention-drawer__scrim" type="button" aria-label={`Close ${project.name}`} onClick={onClose} />
+      <aside className="project-drawer is-open" aria-label={`${project.name} details`}>
+        <div className="attention-drawer__header">
           <div>
             <h2 className="flex items-center gap-2 text-xl font-bold text-slate-100">
               <FolderOpen className="text-indigo-400" /> {project.name}
             </h2>
             <p className="mt-1 font-mono text-sm text-slate-500">{project.path}</p>
           </div>
-          <button onClick={onClose} className="rounded-lg p-2 text-slate-500 transition-colors hover:bg-slate-800 hover:text-slate-100">
-            <Settings size={20} />
+          <button type="button" onClick={onClose} className="attention-drawer__close" aria-label={`Close ${project.name}`}>
+            <X size={18} />
           </button>
         </div>
 
-        <div className="max-h-[70vh] space-y-6 overflow-y-auto p-6 custom-scrollbar">
+        <div className="project-drawer__body custom-scrollbar">
           <section className="grid gap-4 md:grid-cols-3">
             <div className="rounded-xl border border-slate-800 bg-slate-800/20 p-4">
               <div className="text-xs font-bold uppercase tracking-widest text-slate-500">Branch</div>
@@ -702,15 +981,8 @@ const ProjectModal = ({ project, onClose, drift = [], referenceProject, isRefere
             </div>
           </section>
         </div>
-
-        <div className="flex justify-end gap-3 border-t border-slate-800 bg-slate-900/80 p-4">
-          <button onClick={onClose} className="px-4 py-2 text-sm font-bold text-slate-400 transition-colors hover:text-slate-100">Dismiss</button>
-          <button className="flex items-center gap-2 rounded-lg border border-slate-700 px-4 py-2 text-sm font-bold text-slate-300" disabled>
-            Read-only view <ExternalLink size={14} />
-          </button>
-        </div>
-      </div>
-    </div>
+      </aside>
+    </>
   );
 };
 
@@ -754,10 +1026,13 @@ export default function App() {
   const [scan, setScan] = useState(null);
   const [dataStatus, setDataStatus] = useState('loading');
   const [selectedProject, setSelectedProject] = useState(null);
-  const [searchQuery, setSearchQuery] = useState('');
   const [theme, setTheme] = useState(() => localStorage.getItem('aperture-theme') || localStorage.getItem('aperture-theme-mode') || 'dark');
   const [attentionOpen, setAttentionOpen] = useState(false);
+  const [insightDrawer, setInsightDrawer] = useState(null);
+  const [manualProjectFormOpen, setManualProjectFormOpen] = useState(false);
+  const [manualProjects, setManualProjects] = useState(readManualProjects);
   const [seenAttentionIds, setSeenAttentionIds] = useState(readSeenAttentionIds);
+  const [referenceProjectId, setReferenceProjectId] = useState(() => localStorage.getItem('aperture-reference-project') || '');
 
   useEffect(() => {
     let cancelled = false;
@@ -796,16 +1071,59 @@ export default function App() {
     localStorage.setItem('aperture-theme', theme);
   }, [theme]);
 
-  const projects = scan?.projects ?? [];
-  const filteredProjects = useMemo(() => {
-    const query = searchQuery.toLowerCase();
-    return projects.filter((project) => {
-      const haystack = [project.name, project.path, ...stackList(project), project.package?.manager ?? ''].join(' ').toLowerCase();
-      return haystack.includes(query);
-    });
-  }, [projects, searchQuery]);
+  useEffect(() => {
+    localStorage.setItem(MANUAL_PROJECTS_STORAGE_KEY, JSON.stringify(manualProjects));
+  }, [manualProjects]);
 
-  const attentionItems = useMemo(() => createAttentionItems(projects), [projects]);
+  const projects = useMemo(() => [...(scan?.projects ?? []), ...manualProjects], [scan?.projects, manualProjects]);
+  const workspaceRootLabel = scan?.workspaceRoot ?? (manualProjects.length ? 'Manual entries' : '');
+  const shouldShowDashboard = dataStatus === 'live' || manualProjects.length > 0;
+  const displayedDataStatus = dataStatus === 'live' ? 'Generated projects.json' : dataStatus === 'loading' ? 'Analyzing' : manualProjects.length ? 'Manual entries' : 'No workspace yet';
+  const handleAddManualProject = (project) => {
+    setManualProjects((current) => [...current, project]);
+    setDataStatus((status) => (status === 'loading' ? 'empty' : status));
+    setManualProjectFormOpen(false);
+  };
+  const referenceProject = useMemo(() => {
+    if (!projects.length) return null;
+    return projects.find((project) => project.id === referenceProjectId) ?? projects[0];
+  }, [projects, referenceProjectId]);
+  useEffect(() => {
+    if (!projects.length) return;
+    if (!referenceProjectId || !projects.some((project) => project.id === referenceProjectId)) {
+      setReferenceProjectId(projects[0].id);
+    }
+  }, [projects, referenceProjectId]);
+  useEffect(() => {
+    if (referenceProject?.id) {
+      localStorage.setItem('aperture-reference-project', referenceProject.id);
+    }
+  }, [referenceProject?.id]);
+  const driftMap = useMemo(() => createDriftMap(projects, referenceProject), [projects, referenceProject]);
+
+  const attentionItems = useMemo(() => createAttentionItems(projects, driftMap), [projects, driftMap]);
+  const riskItems = useMemo(() => projects.flatMap((project) => (project.risks ?? []).map((risk) => ({
+    id: `${project.id}-${risk.id}`,
+    project,
+    severity: risk.severity,
+    title: risk.title,
+    detail: risk.detail,
+  }))), [projects]);
+  const dirtyItems = useMemo(() => projects.filter((project) => project.git?.dirty).map((project) => ({
+    id: `${project.id}-dirty`,
+    project,
+    severity: 'medium',
+    icon: 'dirty',
+    title: 'Dirty worktree',
+    detail: `${project.name} has uncommitted local changes.`,
+  })), [projects]);
+  const driftItems = useMemo(() => projects.flatMap((project) => (driftMap[project.id] ?? []).map((drift) => ({
+    id: `${project.id}-drift-${drift.id}`,
+    project,
+    severity: drift.severity,
+    title: `${drift.category} drift`,
+    detail: drift.detail,
+  }))), [projects, driftMap]);
   const seenAttentionSet = useMemo(() => new Set(seenAttentionIds), [seenAttentionIds]);
   const unseenAttentionIds = useMemo(
     () => new Set(attentionItems.filter((item) => !seenAttentionSet.has(item.id)).map((item) => item.id)),
@@ -819,36 +1137,32 @@ export default function App() {
   };
   const stats = useMemo(() => {
     const riskCount = projects.reduce((sum, project) => sum + (project.risks?.length ?? 0), 0);
+    const driftCount = projects.reduce((sum, project) => sum + (driftMap[project.id]?.length ?? 0), 0);
     const dirtyCount = projects.filter((project) => project.git?.dirty).length;
     const avgReadiness = projects.length
       ? Math.round(projects.reduce((sum, project) => sum + (project.aiReadiness?.score ?? 0), 0) / projects.length)
       : 0;
-    return { totalProjects: projects.length, riskCount, dirtyCount, avgReadiness };
-  }, [projects]);
+    return { totalProjects: projects.length, riskCount, driftCount, dirtyCount, avgReadiness };
+  }, [projects, driftMap]);
 
   return (
     <div className="aperture-app flex h-screen bg-slate-950 font-sans text-slate-300 selection:bg-indigo-500/30">
       <Sidebar />
       <main className="flex flex-1 flex-col overflow-hidden">
         <header className="sticky top-0 z-10 flex min-h-20 items-center justify-between gap-4 border-b border-slate-800 bg-slate-950/50 px-4 backdrop-blur-md md:px-8">
-          <div className="flex max-w-xl flex-1 items-center gap-4">
-            <div className="relative w-full">
-              <Search size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" />
-              <input
-                type="text"
-                placeholder="Search projects, stacks, package managers..."
-                className="w-full rounded-xl border border-slate-800 bg-slate-900 py-2.5 pl-12 pr-4 text-sm text-slate-100 transition-all focus:border-indigo-500/50 focus:outline-none focus:ring-1 focus:ring-indigo-500/50"
-                value={searchQuery}
-                onChange={(event) => setSearchQuery(event.target.value)}
-              />
-            </div>
+          <div className="flex flex-1 items-center gap-3">
+            <div className="text-xs font-black uppercase tracking-[0.28em] text-indigo-300">Aperture</div>
           </div>
           <div className="hidden text-right md:block">
             <div className="text-xs font-bold uppercase tracking-widest text-slate-500">Data Source</div>
             <div className={`text-sm font-bold ${dataStatus === 'live' ? 'text-emerald-400' : dataStatus === 'loading' ? 'text-indigo-300' : 'text-amber-400'}`}>
-              {dataStatus === 'live' ? 'Generated projects.json' : dataStatus === 'loading' ? 'Analyzing' : 'No workspace yet'}
+              {displayedDataStatus}
             </div>
           </div>
+          <button type="button" className="attention-trigger" onClick={() => setManualProjectFormOpen(true)} aria-label="Add project manually" title="Add project manually">
+            <Plus size={18} />
+            <span className="hidden text-xs font-black uppercase tracking-widest lg:inline">Add</span>
+          </button>
           <AttentionButton
             count={attentionItems.length}
             unseenCount={unseenAttentionIds.size}
@@ -868,17 +1182,38 @@ export default function App() {
         </header>
 
         <div className="flex-1 space-y-10 overflow-y-auto p-4 custom-scrollbar md:p-8">
-          {dataStatus === 'loading' && <ApertureAnalyzer />}
+          {dataStatus === 'loading' && !manualProjects.length && <ApertureAnalyzer />}
 
-          {dataStatus === 'empty' && <EmptyState />}
+          {!shouldShowDashboard && dataStatus === 'empty' && <EmptyState onAddManualProject={() => setManualProjectFormOpen(true)} />}
 
-          {dataStatus === 'live' && (
+          {shouldShowDashboard && (
             <>
-          <section className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-4">
+          <section className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-5">
             <StatCard title="Projects Mapped" value={stats.totalProjects} icon={FolderOpen} />
             <StatCard title="Avg AI Readiness" value={`${stats.avgReadiness}%`} icon={Cpu} tone="emerald" />
-            <StatCard title="Risk Findings" value={stats.riskCount} icon={ShieldAlert} tone={stats.riskCount ? 'rose' : 'emerald'} />
-            <StatCard title="Dirty Worktrees" value={stats.dirtyCount} icon={GitBranch} tone={stats.dirtyCount ? 'rose' : 'emerald'} />
+            <StatCard title="Risk Findings" value={stats.riskCount} icon={ShieldAlert} tone={stats.riskCount ? 'rose' : 'emerald'} onClick={() => setInsightDrawer('risks')} />
+            <StatCard title="Dirty Worktrees" value={stats.dirtyCount} icon={GitBranch} tone={stats.dirtyCount ? 'rose' : 'emerald'} onClick={() => setInsightDrawer('dirty')} />
+            <StatCard title="Reference Drift" value={stats.driftCount} icon={GitCompareArrows} tone={stats.driftCount ? 'rose' : 'emerald'} onClick={() => setInsightDrawer('drift')} />
+          </section>
+
+          <section className="rounded-2xl border border-slate-800 bg-slate-900/40 p-5">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+              <div>
+                <h3 className="flex items-center gap-2 text-lg font-bold text-slate-100">
+                  <GitCompareArrows size={18} className="text-indigo-300" /> Reference Project
+                </h3>
+                <p className="mt-1 text-sm text-slate-500">Choose the gold-standard project. Drift stays advisory and read-only.</p>
+              </div>
+              <select
+                className="rounded-xl border border-slate-800 bg-slate-950 px-4 py-3 text-sm font-bold text-slate-200 outline-none transition-colors focus:border-indigo-500/60"
+                value={referenceProject?.id ?? ''}
+                onChange={(event) => setReferenceProjectId(event.target.value)}
+              >
+                {projects.map((project) => (
+                  <option key={project.id} value={project.id}>{project.name}</option>
+                ))}
+              </select>
+            </div>
           </section>
 
           <section>
@@ -888,27 +1223,33 @@ export default function App() {
                     Workspace Map
                     <span className="rounded bg-slate-800 px-2 py-0.5 text-[10px] uppercase tracking-tighter text-slate-500">Local-first</span>
                   </h2>
-                  <p className="mt-1 text-sm italic text-slate-500">Factual scanner output from {scan.workspaceRoot}.</p>
+                  <p className="mt-1 text-sm italic text-slate-500">Factual scanner output from {workspaceRootLabel}.</p>
                 </div>
-                <div className="text-xs font-bold uppercase tracking-widest text-slate-500">Schema {scan.schemaVersion}</div>
+                <div className="text-xs font-bold uppercase tracking-widest text-slate-500">Schema {scan?.schemaVersion ?? 'aperture.scan.v1'}</div>
               </div>
 
-              {filteredProjects.length > 0 ? (
+              {projects.length > 0 ? (
                 <div className="grid grid-cols-1 gap-6 md:grid-cols-2 2xl:grid-cols-3">
-                  {filteredProjects.map((project) => (
-                    <ProjectCard key={project.id} project={project} onSelect={setSelectedProject} />
+                  {projects.map((project) => (
+                    <ProjectCard
+                      key={project.id}
+                      project={project}
+                      drift={driftMap[project.id] ?? []}
+                      isReference={project.id === referenceProject?.id}
+                      onSelect={setSelectedProject}
+                    />
                   ))}
                 </div>
               ) : (
                 <div className="rounded-2xl border border-dashed border-slate-800 p-12 text-center">
                   <FolderOpen className="mx-auto mb-4 text-slate-600" size={36} />
-                  <h3 className="text-lg font-bold text-slate-200">No matching projects</h3>
-                  <p className="mt-2 text-sm text-slate-500">Adjust search or generate a fresh scanner output.</p>
+                  <h3 className="text-lg font-bold text-slate-200">No projects mapped</h3>
+                  <p className="mt-2 text-sm text-slate-500">Generate a fresh scanner output.</p>
                 </div>
               )}
           </section>
 
-          {scan.scanErrors?.length > 0 && (
+          {scan?.scanErrors?.length > 0 && (
             <section className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-5">
               <h3 className="mb-3 font-bold text-amber-300">Scan Errors</h3>
               <div className="space-y-2">
@@ -923,6 +1264,12 @@ export default function App() {
         </div>
       </main>
 
+      <ManualProjectDrawer
+        open={manualProjectFormOpen}
+        onClose={() => setManualProjectFormOpen(false)}
+        onAddProject={handleAddManualProject}
+      />
+
       <AttentionDrawer
         open={attentionOpen}
         items={attentionItems}
@@ -934,7 +1281,54 @@ export default function App() {
         }}
       />
 
-      <ProjectModal project={selectedProject} onClose={() => setSelectedProject(null)} />
+      <InsightDrawer
+        open={insightDrawer === 'risks'}
+        title="Risk Findings"
+        subtitle="Local hygiene findings grouped by project."
+        emptyLabel="No risk findings detected."
+        items={riskItems}
+        onClose={() => setInsightDrawer(null)}
+        onSelectProject={(project) => {
+          setSelectedProject(project);
+          setInsightDrawer(null);
+        }}
+      />
+
+      <InsightDrawer
+        open={insightDrawer === 'dirty'}
+        title="Dirty Worktrees"
+        subtitle="Projects with uncommitted local changes."
+        emptyLabel="No dirty worktrees detected."
+        items={dirtyItems}
+        onClose={() => setInsightDrawer(null)}
+        onSelectProject={(project) => {
+          setSelectedProject(project);
+          setInsightDrawer(null);
+        }}
+      />
+
+      <InsightDrawer
+        open={insightDrawer === 'drift'}
+        title="Reference Drift"
+        subtitle={`Compared against ${referenceProject?.name ?? 'the current reference'}.`}
+        emptyLabel="No reference drift detected."
+        items={driftItems}
+        onClose={() => setInsightDrawer(null)}
+        onSelectProject={(project) => {
+          setSelectedProject(project);
+          setInsightDrawer(null);
+        }}
+      />
+
+      {selectedProject && (
+        <ProjectDrawer
+          project={selectedProject}
+          drift={driftMap[selectedProject.id] ?? []}
+          referenceProject={referenceProject}
+          isReference={selectedProject?.id === referenceProject?.id}
+          onClose={() => setSelectedProject(null)}
+        />
+      )}
 
       <style>{`
         @keyframes aperture-spin {

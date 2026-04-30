@@ -15,7 +15,7 @@ The scanner writes the first stable Aperture data contract. The dashboard and fu
 
 ## Project Shape
 
-Each project is discovered one level below `workspaceRoot` when it contains a known project marker such as `.git`, `package.json`, `go.mod`, `requirements.txt`, `pyproject.toml`, `Cargo.toml`, `pom.xml`, `build.gradle`, or `composer.json`.
+Each project is discovered below `workspaceRoot` when it contains a known project marker such as `.git`, `package.json`, `go.mod`, `requirements.txt`, `pyproject.toml`, `Cargo.toml`, `pom.xml`, `build.gradle`, or `composer.json`. The scanner checks direct children first, then unwraps one level of non-project grouping folders so collections like `~/Far Out Quest/Far Out Quest Page` still surface as projects.
 
 Some folders with project markers are implementation components, not workspace projects. For example, a root-level Firebase `functions` source listed by `workspaceRoot/firebase.json` should be treated as part of that Firebase app unless it is its own Git repository.
 
