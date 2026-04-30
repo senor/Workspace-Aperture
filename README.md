@@ -1,6 +1,6 @@
 # Aperture
 
-Aperture is a local-first workspace map for solo and agentic developers. It helps you see what is going on across your local projects, understand where projects are drifting from your preferred patterns, and prepare compact context briefs for AI agents before they touch code.
+Aperture is a local-first single pane of glass for solo builders. It maps your projects, detects their stacks, and adds stack-aware launch hygiene so you can see what needs attention before sharing with users or handing work to an agent.
 
 The V1 product promise is simple: Aperture should calmly tell the truth about your workspace.
 
@@ -10,20 +10,22 @@ It should answer questions like:
 - What stacks, package managers, scripts, docs, and Git states do they have?
 - Which projects need attention today?
 - Which projects drift from my reference project?
+- What can leak or bite me before I share this project?
+- Which checks do not apply because this project does not use that stack?
 - Is this repo ready for an AI coding agent?
 - What short brief should I give an agent before work starts?
 
 ## Current Status
 
-This repository is currently a proof of concept, not yet a runnable full application.
+This repository is currently a proof of concept with a runnable local dashboard.
 
 It contains:
 
 - `ApertureDashboard.jsx`: a React/Tailwind dashboard prototype with mock data.
-- `scanner.py`: a read-only local scanner that writes the V1 `aperture.scan.v1` project inventory contract.
+- `scanner.py`: a read-only local scanner that writes the V1 `aperture.scan.v1` project inventory contract, including stack-aware launch profile hints.
 - `Docs/`: product, roadmap, setup, and positioning documents.
 
-The repository now includes a runnable Vite React app scaffold. It does not yet include persisted storage or a real MCP server. Those are planned in the roadmap.
+The repository now includes a runnable Vite React app scaffold. It does not yet include a real MCP server, hosted scanning, billing, ZIP upload, or GitHub connector. Those are deferred.
 
 ## Product Direction
 
@@ -33,13 +35,14 @@ Aperture V1 is centered on five pillars:
 2. **Today's Attention**: a prioritized view of recent changes, stale projects, risks, and missing context.
 3. **Reference Project Drift**: compare projects against a chosen gold-standard project.
 4. **AI-Readiness Checklist**: show whether a project has the docs, scripts, and setup clarity an AI agent needs.
-5. **Agent Brief Export**: generate compact project context for Claude, Cursor, Codex, or an MCP client.
+5. **Launch Hygiene**: detect stack-aware leak and exposure risks without turning the product into a report-first scanner.
+6. **Agent Brief Export**: generate compact project context for Claude, Cursor, Codex, or an MCP client.
 
-Aperture should favor explainable facts over abstract health scores. Scores may come later, but V1 should first build trust with concrete signals: stack, package manager, Git branch, dirty state, last commit, scripts, docs, env risk, and CI presence.
+Aperture should favor explainable facts over abstract health scores. Scores may come later, but V1 should first build trust with concrete signals: stack, package manager, Git branch, dirty state, last commit, scripts, docs, env risk, CI presence, launch profile, skipped checks, and traceable hygiene findings.
 
 ## Run The App
 
-First-run path: scan a local folder. GitHub and GitLab connectors are planned, not implemented.
+First-run path: scan a local projects folder, review discovered project candidates, then decide what enters the workspace map. GitHub and GitLab connectors are planned, not implemented, and should eventually reuse the same discovery review pattern.
 
 
 Install dependencies and start the dashboard:
@@ -61,6 +64,12 @@ Generate local workspace data:
 python3 scanner.py --root ~/dev --output public/projects.json
 ```
 
+Scan this repo directly:
+
+```bash
+python3 scanner.py --root . --output /tmp/aperture-projects.json
+```
+
 ## How The Prototype Works
 
 The current prototype has two pieces:
@@ -68,7 +77,17 @@ The current prototype has two pieces:
 1. The Vite app renders the preserved React dashboard from `src/App.jsx` using mock data.
 2. `scanner.py` can scan a local development folder and generate `public/projects.json` using the documented scanner contract. The dashboard loads that file automatically when present.
 
-The dashboard fetches `/projects.json` at runtime and falls back to a concise setup state when no generated scanner output exists. Reference Project Drift is now available as a read-only comparison inside the dashboard.
+The dashboard fetches `/projects.json` at runtime and falls back to a concise setup state when no generated scanner output exists. Reference Project Drift is available as a read-only comparison inside the dashboard, and Launch Hygiene appears inside each project detail drawer.
+
+## Launch Hygiene Notes
+
+Launch Hygiene is deliberately contextual:
+
+- Firebase browser config is not treated as a secret by itself; Firestore and Storage rules matter more.
+- Supabase anon keys are expected in browser apps; service-role keys are critical if exposed.
+- If no auth provider is detected, Aperture skips user-isolation checks and focuses on public writes, abuse, and sensitive public data.
+- API route/function checks are static heuristics. Aperture flags "no obvious auth check found" with confidence labels and file evidence; deeper tracing and fixes belong in future IDE or agent integrations.
+- Payment bypass checks are skipped when no payment provider is detected.
 
 ## Canonical Docs
 

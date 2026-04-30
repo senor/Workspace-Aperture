@@ -14,6 +14,7 @@ import {
   GitBranch,
   LayoutDashboard,
   Moon,
+  MoreHorizontal,
   Palette,
   Plus,
   Save,
@@ -86,9 +87,11 @@ const DEMO_SCAN = {
 };
 
 const severityStyles = {
+  critical: 'bg-rose-600/15 text-rose-300 border-rose-500/40',
   high: 'bg-rose-500/10 text-rose-400 border-rose-500/30',
   medium: 'bg-amber-500/10 text-amber-400 border-amber-500/30',
   low: 'bg-sky-500/10 text-sky-400 border-sky-500/30',
+  info: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30',
 };
 
 const techColors = {
@@ -112,9 +115,19 @@ const formatDate = (dateValue) => {
   return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(date);
 };
 
-const riskSeverityRank = { high: 3, medium: 2, low: 1 };
+const riskSeverityRank = { critical: 4, high: 3, medium: 2, low: 1, info: 0 };
 const MANUAL_PROJECTS_STORAGE_KEY = 'aperture-manual-projects';
-const SCANNER_CHECK_SCOPE = 'README, scripts, env, and CI checks';
+const PROJECT_STATES_STORAGE_KEY = 'aperture-project-states';
+const SCANNER_CHECK_SCOPE = 'README, scripts, env, CI, and stack-aware launch checks';
+const TRACKED_PROJECT_STATES = new Set(['tracked', 'reference']);
+const PROJECT_STATE_LABELS = {
+  candidate: 'Candidate',
+  tracked: 'Tracked',
+  ignored: 'Ignored',
+  reference: 'Reference',
+  archived: 'Archived',
+  sleeping: 'Sleeping',
+};
 
 const APERTURE_THEMES = [
   { id: 'dark', label: 'Dark', swatch: '#020617', icon: Moon },
@@ -180,6 +193,11 @@ const readinessSummary = (aiReadiness = {}) => {
 
 const riskCategory = (risk) => {
   if (!risk) return 'Scanner evidence';
+  if (risk.category) {
+    return String(risk.category)
+      .replace(/-/g, ' ')
+      .replace(/\b\w/g, (letter) => letter.toUpperCase());
+  }
   if (risk.id?.includes('env')) return 'Repo safety';
   if (risk.id?.includes('readme')) return 'Setup context';
   if (risk.id?.includes('test') || risk.id?.includes('ci')) return 'Project hygiene';
@@ -434,6 +452,81 @@ const readManualProjects = () => {
   }
 };
 
+const readProjectStates = () => {
+  try {
+    const saved = JSON.parse(localStorage.getItem(PROJECT_STATES_STORAGE_KEY) ?? '{}');
+    return saved && typeof saved === 'object' && !Array.isArray(saved) ? saved : {};
+  } catch {
+    return {};
+  }
+};
+
+const normalizeProjectState = (state) => (PROJECT_STATE_LABELS[state] ? state : 'candidate');
+
+const applyProjectState = (project, savedStates = {}) => {
+  if (project.source === 'manual') {
+    return { ...project, projectState: normalizeProjectState(project.projectState ?? savedStates[project.id] ?? 'tracked') };
+  }
+  return { ...project, projectState: normalizeProjectState(savedStates[project.id] ?? 'candidate') };
+};
+
+const launchProfileSummary = (profile = {}) => {
+  const parts = [
+    profile.framework && profile.framework !== 'unknown' ? profile.framework : null,
+    profile.backend && profile.backend !== 'unknown' ? profile.backend : null,
+    profile.auth && profile.auth !== 'unknown' ? `${profile.auth} auth` : profile.auth === 'none' ? 'no auth' : null,
+    profile.payments && profile.payments !== 'unknown' ? `${profile.payments} payments` : null,
+  ].filter(Boolean);
+  return parts.length ? parts.join(' / ') : 'Unknown launch surface';
+};
+
+const launchProfileRows = (profile = {}) => [
+  ['Framework', profile.framework ?? 'unknown'],
+  ['Backend', profile.backend ?? 'unknown'],
+  ['Auth', profile.auth ?? 'unknown'],
+  ['Database', profile.database ?? 'unknown'],
+  ['Storage', profile.storage ?? 'unknown'],
+  ['Payments', profile.payments ?? 'unknown'],
+  ['AI APIs', profile.aiApis?.length ? profile.aiApis.join(', ') : 'none'],
+];
+
+const launchHygieneRisks = (project) => (project.risks ?? [])
+  .filter((risk) => risk.category && risk.category !== 'setup')
+  .sort((a, b) => (riskSeverityRank[b.severity] ?? 0) - (riskSeverityRank[a.severity] ?? 0));
+
+const looksNormalChecks = (project) => {
+  const profile = project.launchProfile ?? {};
+  const checks = [];
+  const hasFirebase = profile.backend === 'firebase';
+  const hasSupabase = profile.backend === 'supabase';
+  const hasServiceRoleRisk = (project.risks ?? []).some((risk) => risk.id?.includes('service_role'));
+  if (hasFirebase) {
+    checks.push({
+      title: 'Firebase web config can be public',
+      detail: 'Firebase browser config is not a secret by itself; the important guardrail is rules and server-side privileges.',
+    });
+  }
+  if (hasSupabase && !hasServiceRoleRisk) {
+    checks.push({
+      title: 'Supabase anon key is expected in browser apps',
+      detail: 'The anon key is designed for client use when RLS and policies protect the data.',
+    });
+  }
+  if (profile.payments === 'none') {
+    checks.push({
+      title: 'No payment surface detected',
+      detail: 'Aperture did not find Stripe or Lemon Squeezy markers, so payment bypass work is not part of this pass.',
+    });
+  }
+  if (profile.auth === 'none') {
+    checks.push({
+      title: 'No auth model detected',
+      detail: 'User isolation is not assumed; launch hygiene focuses on public data boundaries and abuse risk.',
+    });
+  }
+  return checks;
+};
+
 const createManualProject = (form) => {
   const docs = {
     files: form.hasReadme ? ['README.md'] : [],
@@ -475,9 +568,23 @@ const createManualProject = (form) => {
       dirty: false,
       lastCommit: null,
     },
+    projectState: 'tracked',
     docs,
     env,
     ci,
+    launchProfile: {
+      framework: form.frameworks.toLowerCase().includes('next') ? 'next' : form.tools.toLowerCase().includes('vite') ? 'vite' : form.frameworks.toLowerCase().includes('react') ? 'react' : 'unknown',
+      backend: 'unknown',
+      auth: 'unknown',
+      database: 'unknown',
+      storage: 'unknown',
+      payments: 'none',
+      aiApis: [],
+    },
+    skippedChecks: [
+      { id: 'manual_scan', title: 'Deep launch checks skipped', reason: 'This is a manual entry, so Aperture has no local files to inspect.' },
+      { id: 'payment_bypass', title: 'Payment bypass checks skipped', reason: 'No payment provider was entered for this project.' },
+    ],
     aiReadiness: collectManualReadiness(docs, scripts, env),
     risks: collectManualRisks(docs, scripts, ci),
   };
@@ -1026,17 +1133,22 @@ const suggestedFilesForProject = (project) => {
 const agentBriefLines = (project, drift = []) => {
   const stack = stackList(project);
   const risk = topRiskFinding(project.risks ?? []);
+  const launchRisks = launchHygieneRisks(project);
   const setup = readinessSummary(project.aiReadiness);
   const scripts = Object.keys(project.scripts ?? {});
   const files = suggestedFilesForProject(project);
+  const skipped = project.skippedChecks ?? [];
   return [
     `Project: ${project.name}`,
     `Path: ${project.path}`,
     `Stack: ${stack.length ? stack.join(', ') : 'Unknown'}`,
+    `Launch profile: ${launchProfileSummary(project.launchProfile)}`,
     `Package: ${project.package?.manager ?? 'None'}; scripts: ${scripts.length ? scripts.join(', ') : 'none detected'}`,
     `Git: ${project.git?.isRepo ? `${project.git?.branch ?? 'detached'}; ${project.git?.dirty ? 'dirty worktree' : 'clean worktree'}` : 'not a Git repo'}`,
     `Setup: ${setup.total ? `${setup.passed}/${setup.total} checks present` : `${project.aiReadiness?.score ?? 0}% coverage`}`,
     `Top risk: ${risk ? `${riskCategory(risk)} - ${risk.title}` : `No hygiene findings from ${SCANNER_CHECK_SCOPE}`}`,
+    `Launch hygiene: ${launchRisks.length ? `${launchRisks.length} stack-aware finding${launchRisks.length === 1 ? '' : 's'}; ${launchRisks[0].title}` : 'No stack-aware launch findings'}`,
+    `Skipped checks: ${skipped.length ? skipped.map((item) => item.title).join('; ') : 'none'}`,
     `Reference: ${drift.length ? `${drift.length} difference${drift.length === 1 ? '' : 's'}; ${driftMeaning(drift)}` : 'No reference differences detected'}`,
     `Inspect first: ${files.length ? files.join(', ') : 'README, package metadata, and project entrypoints if present'}`,
   ];
@@ -1245,8 +1357,119 @@ const ProjectCard = ({ project, onSelect, drift = [], isReference }) => {
   );
 };
 
+const DiscoveryReview = ({ candidates, onSetProjectState, onTrackAll, onDefer }) => {
+  const [openMenuId, setOpenMenuId] = useState(null);
+  const featured = candidates[0];
+  const remainingCount = Math.max(0, candidates.length - 1);
+
+  return (
+    <>
+      <div className="setup-wizard__scrim" />
+      <section className="setup-wizard" role="dialog" aria-modal="true" aria-labelledby="setup-wizard-title">
+        <div className="setup-wizard__hero">
+          <div>
+            <div className="setup-wizard__eyebrow">Setup wizard</div>
+            <h2 id="setup-wizard-title">Aperture found your workspace</h2>
+            <p>
+              Start with the projects that matter now. Everything else can sleep quietly until you need it.
+            </p>
+          </div>
+          <div className="setup-wizard__count">
+            <strong>{candidates.length}</strong>
+            <span>new candidate{candidates.length === 1 ? '' : 's'}</span>
+          </div>
+        </div>
+
+        {featured && (
+          <div className="setup-wizard__featured">
+            <div className="setup-wizard__featured-copy">
+              <span>Suggested first project</span>
+              <h3>{featured.name}</h3>
+              <p>{featured.path}</p>
+            </div>
+            <div className="setup-wizard__featured-meta">
+              <span>{stackList(featured).slice(0, 3).join(' / ') || 'Unknown stack'}</span>
+              <span>{launchProfileSummary(featured.launchProfile)}</span>
+            </div>
+            <div className="setup-wizard__featured-actions">
+              <button type="button" className="setup-wizard__primary" onClick={() => onSetProjectState(featured.id, 'tracked')}>
+                Track project
+              </button>
+              <button type="button" className="setup-wizard__secondary" onClick={() => onSetProjectState(featured.id, 'reference')}>
+                Use as reference
+              </button>
+            </div>
+          </div>
+        )}
+
+        <div className="setup-wizard__toolbar">
+          <span>{remainingCount ? `${remainingCount} more candidate${remainingCount === 1 ? '' : 's'} found` : 'No more candidates after this one'}</span>
+          <div>
+            <button type="button" onClick={onTrackAll}>Track all</button>
+            <button type="button" onClick={onDefer}>Review later</button>
+          </div>
+        </div>
+
+        {remainingCount > 0 && (
+          <div className="setup-wizard__list">
+            {candidates.slice(1).map((project) => (
+              <article key={project.id} className="setup-candidate">
+                <div className="setup-candidate__identity">
+                  <h3>{project.name}</h3>
+                  <p>{project.path}</p>
+                </div>
+                <div className="setup-candidate__meta">
+                  <span>{stackList(project).slice(0, 2).join(' / ') || 'Unknown stack'}</span>
+                  <span>{(project.risks ?? []).length} finding{(project.risks ?? []).length === 1 ? '' : 's'}</span>
+                </div>
+                <div className="setup-candidate__actions">
+                  <button type="button" className="setup-candidate__track" onClick={() => onSetProjectState(project.id, 'tracked')}>
+                    Track
+                  </button>
+                  <button type="button" onClick={() => onSetProjectState(project.id, 'reference')}>
+                    Reference
+                  </button>
+                  <div className="setup-candidate__more">
+                    <button
+                      type="button"
+                      aria-label={`More actions for ${project.name}`}
+                      aria-expanded={openMenuId === project.id}
+                      onClick={() => setOpenMenuId((current) => (current === project.id ? null : project.id))}
+                    >
+                      <MoreHorizontal size={18} />
+                    </button>
+                    {openMenuId === project.id && (
+                      <div className="setup-candidate__menu">
+                        {['sleeping', 'archived', 'ignored'].map((state) => (
+                          <button
+                            key={state}
+                            type="button"
+                            onClick={() => {
+                              onSetProjectState(project.id, state);
+                              setOpenMenuId(null);
+                            }}
+                          >
+                            {PROJECT_STATE_LABELS[state]}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
+      </section>
+    </>
+  );
+};
+
 const ProjectDrawer = ({ project, open, onClose, drift = [], referenceProject, isReference }) => {
   const risks = project.risks ?? [];
+  const launchRisks = launchHygieneRisks(project);
+  const normalChecks = looksNormalChecks(project);
+  const skippedChecks = project.skippedChecks ?? [];
   const checks = project.aiReadiness?.checks ?? [];
   const briefLines = agentBriefLines(project, drift);
   return (
@@ -1278,6 +1501,85 @@ const ProjectDrawer = ({ project, open, onClose, drift = [], referenceProject, i
             <div className="project-drawer__stat">
               <div className="project-drawer__label">Last Commit</div>
               <div className="project-drawer__value">{formatDate(project.git?.lastCommit?.date)}</div>
+            </div>
+          </section>
+
+          <section className="project-drawer__panel project-drawer__panel--launch">
+            <div className="project-drawer__section-heading">
+              <h3><ShieldAlert size={14} /> Detected Launch Profile</h3>
+              <span>{PROJECT_STATE_LABELS[project.projectState] ?? 'Tracked'}</span>
+            </div>
+            <div className="launch-profile-grid">
+              {launchProfileRows(project.launchProfile).map(([label, value]) => (
+                <div key={label} className="launch-profile-item">
+                  <span>{label}</span>
+                  <strong>{value}</strong>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <section>
+            <div className="project-drawer__section-heading project-drawer__section-heading--subtle">
+              <h3><AlertTriangle size={14} /> Fix Before Sharing</h3>
+              <span>{launchRisks.length} finding{launchRisks.length === 1 ? '' : 's'}</span>
+            </div>
+            <div className="project-drawer__stack">
+              {launchRisks.length > 0 ? launchRisks.map((risk) => (
+                <div key={`${risk.id}-${risk.detail}`} className={`project-drawer__drift-card ${severityStyles[risk.severity] || severityStyles.low}`}>
+                  <div className="project-drawer__drift-head">
+                    <div>
+                      <div className="project-drawer__drift-title">{risk.title}</div>
+                      <div className="project-drawer__drift-detail">{risk.detail}</div>
+                      <div className="project-drawer__why">
+                        Confidence: {risk.confidence ?? 'medium'}{risk.evidence?.length ? ` · Evidence: ${risk.evidence.join(', ')}` : ''}
+                      </div>
+                      {risk.fix && <div className="project-drawer__fix">{risk.fix}</div>}
+                    </div>
+                    <div className="project-drawer__tag">{riskCategory(risk)}</div>
+                  </div>
+                </div>
+              )) : (
+                <div className="project-drawer__panel project-drawer__empty text-emerald-300">
+                  <CheckCircle2 className="mx-auto mb-2" /> No stack-aware launch findings detected.
+                </div>
+              )}
+            </div>
+          </section>
+
+          <section>
+            <div className="project-drawer__section-heading project-drawer__section-heading--subtle">
+              <h3><CheckCircle2 size={14} /> Looks Normal</h3>
+            </div>
+            <div className="project-drawer__stack">
+              {normalChecks.length > 0 ? normalChecks.map((check) => (
+                <div key={check.title} className="project-drawer__normal-card">
+                  <div className="project-drawer__drift-title">{check.title}</div>
+                  <div className="project-drawer__drift-detail">{check.detail}</div>
+                </div>
+              )) : (
+                <div className="project-drawer__panel project-drawer__empty">
+                  No stack-specific normalizations apply yet.
+                </div>
+              )}
+            </div>
+          </section>
+
+          <section>
+            <div className="project-drawer__section-heading project-drawer__section-heading--subtle">
+              <h3><CircleHelp size={14} /> Skipped Checks</h3>
+            </div>
+            <div className="project-drawer__stack">
+              {skippedChecks.length > 0 ? skippedChecks.map((check) => (
+                <div key={check.id} className="project-drawer__skipped-card">
+                  <div className="project-drawer__drift-title">{check.title}</div>
+                  <div className="project-drawer__drift-detail">{check.reason}</div>
+                </div>
+              )) : (
+                <div className="project-drawer__panel project-drawer__empty text-emerald-300">
+                  <CheckCircle2 className="mx-auto mb-2" /> No checks were skipped for this project profile.
+                </div>
+              )}
             </div>
           </section>
 
@@ -1387,7 +1689,7 @@ const ProjectDrawer = ({ project, open, onClose, drift = [], referenceProject, i
   );
 };
 
-const SettingsModal = ({ open, projects, referenceProjectId, onReferenceProjectChange, onClose }) => (
+const SettingsModal = ({ open, projects, allProjects, referenceProjectId, onReferenceProjectChange, onSetProjectState, onClose }) => (
   <>
     <button className={`settings-modal__scrim ${open ? 'is-open' : ''}`} type="button" aria-label="Close settings" onClick={onClose} aria-hidden={!open} tabIndex={open ? 0 : -1} />
     <section className={`settings-modal ${open ? 'is-open' : ''}`} role="dialog" aria-modal="true" aria-labelledby="settings-title" aria-hidden={!open}>
@@ -1422,6 +1724,34 @@ const SettingsModal = ({ open, projects, referenceProjectId, onReferenceProjectC
               <option value="">No projects available</option>
             )}
           </select>
+        </div>
+        <div className="settings-modal__setting">
+          <div>
+            <h3 className="settings-modal__setting-title">
+              <FolderOpen size={16} /> Discovery Management
+            </h3>
+            <p className="settings-modal__setting-copy">Manage tracked, ignored, archived, sleeping, and reference projects from the latest scanner data.</p>
+          </div>
+          <div className="settings-project-list">
+            {allProjects.length > 0 ? allProjects.map((project) => (
+              <div key={project.id} className="settings-project-row">
+                <div className="min-w-0">
+                  <strong>{project.name}</strong>
+                  <span>{PROJECT_STATE_LABELS[project.projectState] ?? 'Candidate'} · {launchProfileSummary(project.launchProfile)}</span>
+                </div>
+                <select
+                  value={project.projectState}
+                  onChange={(event) => onSetProjectState(project.id, event.target.value)}
+                >
+                  {Object.entries(PROJECT_STATE_LABELS).map(([value, label]) => (
+                    <option key={value} value={value}>{label}</option>
+                  ))}
+                </select>
+              </div>
+            )) : (
+              <div className="text-sm font-bold text-slate-500">No projects discovered yet.</div>
+            )}
+          </div>
         </div>
       </div>
     </section>
@@ -1475,6 +1805,7 @@ export default function App() {
   const [manualProjectFormOpen, setManualProjectFormOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [manualProjects, setManualProjects] = useState(readManualProjects);
+  const [projectStates, setProjectStates] = useState(readProjectStates);
   const [seenAttentionIds, setSeenAttentionIds] = useState(readSeenAttentionIds);
   const [referenceProjectId, setReferenceProjectId] = useState(() => localStorage.getItem('aperture-reference-project') || '');
   const [cardVersion, setCardVersion] = useState(() => localStorage.getItem('aperture-card-version') || 'original');
@@ -1522,6 +1853,10 @@ export default function App() {
   }, [manualProjects]);
 
   useEffect(() => {
+    localStorage.setItem(PROJECT_STATES_STORAGE_KEY, JSON.stringify(projectStates));
+  }, [projectStates]);
+
+  useEffect(() => {
     localStorage.setItem('aperture-card-version', cardVersion);
   }, [cardVersion]);
 
@@ -1542,14 +1877,38 @@ export default function App() {
     }
   }, []);
 
-  const projects = useMemo(() => [...(scan?.projects ?? []), ...manualProjects], [scan?.projects, manualProjects]);
+  const allProjects = useMemo(
+    () => [...(scan?.projects ?? []), ...manualProjects].map((project) => applyProjectState(project, projectStates)),
+    [scan?.projects, manualProjects, projectStates],
+  );
+  const candidateProjects = useMemo(() => allProjects.filter((project) => project.projectState === 'candidate'), [allProjects]);
+  const projects = useMemo(() => allProjects.filter((project) => TRACKED_PROJECT_STATES.has(project.projectState)), [allProjects]);
   const workspaceRootLabel = scan?.workspaceRoot ?? (manualProjects.length ? 'Manual entries' : '');
   const shouldShowDashboard = dataStatus === 'live' || manualProjects.length > 0;
   const displayedDataStatus = dataStatus === 'live' ? 'Generated projects.json' : dataStatus === 'loading' ? 'Analyzing' : manualProjects.length ? 'Manual entries' : 'No workspace yet';
   const handleAddManualProject = (project) => {
     setManualProjects((current) => [...current, project]);
+    setProjectStates((current) => ({ ...current, [project.id]: 'tracked' }));
     setDataStatus((status) => (status === 'loading' ? 'empty' : status));
     setManualProjectFormOpen(false);
+  };
+  const setProjectState = (projectId, state) => {
+    setProjectStates((current) => ({ ...current, [projectId]: normalizeProjectState(state) }));
+    if (state === 'reference') {
+      setReferenceProjectId(projectId);
+    }
+  };
+  const trackAllCandidates = () => {
+    setProjectStates((current) => ({
+      ...current,
+      ...Object.fromEntries(candidateProjects.map((project) => [project.id, 'tracked'])),
+    }));
+  };
+  const deferCandidates = () => {
+    setProjectStates((current) => ({
+      ...current,
+      ...Object.fromEntries(candidateProjects.map((project) => [project.id, 'sleeping'])),
+    }));
   };
   const referenceProject = useMemo(() => {
     if (!projects.length) return null;
@@ -1691,6 +2050,15 @@ export default function App() {
 
           {shouldShowDashboard && (
             <>
+          {candidateProjects.length > 0 && (
+            <DiscoveryReview
+              candidates={candidateProjects}
+              onSetProjectState={setProjectState}
+              onTrackAll={trackAllCandidates}
+              onDefer={deferCandidates}
+            />
+          )}
+
           <section className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-5">
             <StatCard title="Projects Mapped" value={stats.totalProjects} icon={FolderOpen} summary={statSummaries.projects} help={{ title: 'Projects mapped', body: 'Projects currently shown from generated scanner output plus manual browser entries.' }} />
             <StatCard title="Avg Setup Readiness" value={`${stats.avgReadiness}%`} icon={Cpu} tone="emerald" summary={statSummaries.readiness} help={conceptHelp('readiness')} />
@@ -1757,8 +2125,10 @@ export default function App() {
       <SettingsModal
         open={settingsOpen}
         projects={projects}
+        allProjects={allProjects}
         referenceProjectId={referenceProject?.id ?? ''}
         onReferenceProjectChange={setReferenceProjectId}
+        onSetProjectState={setProjectState}
         onClose={() => setSettingsOpen(false)}
       />
 

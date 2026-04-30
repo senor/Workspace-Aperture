@@ -15,7 +15,7 @@ The scanner writes the first stable Aperture data contract. The dashboard and fu
 
 ## Project Shape
 
-Each project is discovered below `workspaceRoot` when it contains a known project marker such as `.git`, `package.json`, `go.mod`, `requirements.txt`, `pyproject.toml`, `Cargo.toml`, `pom.xml`, `build.gradle`, or `composer.json`. The scanner checks direct children first, then unwraps one level of non-project grouping folders so collections like `~/Far Out Quest/Far Out Quest Page` still surface as projects.
+Each project is discovered below `workspaceRoot` when it contains a known project marker such as `.git`, `package.json`, `go.mod`, `requirements.txt`, `pyproject.toml`, `Cargo.toml`, `pom.xml`, `build.gradle`, or `composer.json`. If `workspaceRoot` itself is a project, the scanner returns that project. Otherwise, it checks direct children first, then unwraps one level of non-project grouping folders so collections like `~/Far Out Quest/Far Out Quest Page` still surface as projects.
 
 Some folders with project markers are implementation components, not workspace projects. For example, a root-level Firebase `functions` source listed by `workspaceRoot/firebase.json` should be treated as part of that Firebase app unless it is its own Git repository.
 
@@ -67,11 +67,38 @@ Some folders with project markers are implementation components, not workspace p
     "present": true,
     "paths": [".github/workflows"]
   },
+  "launchProfile": {
+    "framework": "vite",
+    "backend": "firebase",
+    "auth": "none",
+    "database": "firestore",
+    "storage": "firebase-storage",
+    "payments": "none",
+    "aiApis": []
+  },
+  "skippedChecks": [
+    {
+      "id": "payment_bypass",
+      "title": "Payment bypass checks skipped",
+      "reason": "No payment provider was detected."
+    }
+  ],
   "aiReadiness": {
     "score": 80,
     "checks": []
   },
-  "risks": []
+  "risks": [
+    {
+      "id": "api_route_missing_obvious_auth",
+      "severity": "medium",
+      "title": "Sensitive handler has no obvious auth check",
+      "detail": "A route/function appears to mutate or expose sensitive state, but no common auth check was found in this file.",
+      "category": "api",
+      "confidence": "low",
+      "evidence": ["app/api/update/route.ts"],
+      "fix": "Trace shared middleware before changing behavior; if none exists, verify the caller server-side before mutating data."
+    }
+  ]
 }
 ```
 
@@ -80,7 +107,9 @@ Some folders with project markers are implementation components, not workspace p
 - `id` is deterministic for a project path and suitable for UI keys.
 - `stack`, `package`, `scripts`, `runtime`, `git`, `docs`, `env`, and `ci` are factual scanner observations.
 - `aiReadiness.score` is derived from explicit checklist items, not an opaque health score.
-- `risks` are local hygiene findings based on observable files or Git commands.
+- `launchProfile` is a stack-aware detection summary. It should be treated as a scanner hint, not a full dependency graph.
+- `skippedChecks` explains why Aperture did not run irrelevant checks for a project, such as Supabase RLS checks when Supabase is absent.
+- `risks` are local hygiene findings based on observable files, Git commands, and conservative static heuristics.
 - `scanErrors` records inaccessible folders or scanner failures without stopping the scan.
 
 ## V1 Risk IDs
@@ -91,6 +120,27 @@ Some folders with project markers are implementation components, not workspace p
 - `env_not_ignored`: an env file exists and `git check-ignore` reports it is not ignored.
 - `env_ignore_unknown`: an env file exists but ignore status cannot be verified.
 - `missing_ci`: no common CI configuration path detected.
+- `supabase_service_role_exposed`: service-role credential reference found in likely client-facing code.
+- `service_account_json_reference`: service account material or reference found in scanned text.
+- `sensitive_browser_storage`: localStorage/sessionStorage appears near sensitive credentials or privilege flags.
+- `client_controlled_admin_signal`: admin or role state appears near client-controlled data.
+- `firebase_public_write_rules`: Firebase rules appear to allow public writes.
+- `firebase_public_read_rules`: Firebase rules appear to allow public reads.
+- `api_route_missing_obvious_auth`: an API route/function appears sensitive and no common auth check was found in the same file.
+
+## Discovery Review State
+
+Project lifecycle state is app metadata, not scanner output. The dashboard may persist a local state per scanner project ID:
+
+```ts
+projectState: "candidate" | "tracked" | "ignored" | "reference" | "archived" | "sleeping";
+```
+
+The scanner remains read-only and factual. The app decides which discovered projects enter the main workspace map.
+
+## API Route Heuristic Limits
+
+API route/function checks are deliberately conservative. They can identify suspicious files where sensitive actions appear without common auth terms in the same file. They cannot prove a route is vulnerable because auth may live in shared middleware, framework config, proxies, or provider rules. Findings should be shown with confidence and file evidence, using language like "no obvious auth check found."
 
 ## Contract Rules
 
