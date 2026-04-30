@@ -53,6 +53,8 @@ SCAN_EXCLUDED_DIRS = {
     "build",
     "coverage",
     "dist",
+    "dist-company",
+    "dist-tools",
     "node_modules",
     "out",
 }
@@ -143,6 +145,8 @@ def collect_text_files(path: Path, max_files: int = 220) -> list[tuple[Path, str
             if any(part in SCAN_EXCLUDED_DIRS for part in item.parts):
                 continue
             if not item.is_file():
+                continue
+            if item.name in {"package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock", "bun.lockb"}:
                 continue
             if item.suffix not in TEXT_EXTENSIONS and item.name not in ["firebase.json", "supabase.toml"]:
                 continue
