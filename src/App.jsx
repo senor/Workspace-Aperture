@@ -1,9 +1,10 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
   AlertTriangle,
   CheckCircle2,
   ChevronRight,
+  CircleHelp,
   Clock,
   Cpu,
   Dna,
@@ -111,14 +112,9 @@ const formatDate = (dateValue) => {
   return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(date);
 };
 
-const stackList = (project) => [
-  ...(project.stack?.languages ?? []),
-  ...(project.stack?.frameworks ?? []),
-  ...(project.stack?.tools ?? []),
-];
-
 const riskSeverityRank = { high: 3, medium: 2, low: 1 };
 const MANUAL_PROJECTS_STORAGE_KEY = 'aperture-manual-projects';
+const SCANNER_CHECK_SCOPE = 'README, scripts, env, and CI checks';
 
 const APERTURE_THEMES = [
   { id: 'dark', label: 'Dark', swatch: '#020617', icon: Moon },
@@ -128,12 +124,132 @@ const APERTURE_THEMES = [
   { id: 'terminal', label: 'Terminal Glow', swatch: '#34d399', icon: Terminal },
 ];
 
+const CARD_VERSIONS = [
+  { id: 'original', label: 'Original' },
+  { id: 'experiment', label: 'Experiment' },
+];
+
 const highestRisk = (project) => {
   const risks = project.risks ?? [];
   return risks.reduce((highest, risk) => {
     if (!highest) return risk;
     return (riskSeverityRank[risk.severity] ?? 0) > (riskSeverityRank[highest.severity] ?? 0) ? risk : highest;
   }, null);
+};
+
+const stackList = (project) => [
+  ...(project.stack?.languages ?? []),
+  ...(project.stack?.frameworks ?? []),
+  ...(project.stack?.tools ?? []),
+].filter(Boolean);
+
+const fullStackSummary = (project) => {
+  const groups = [
+    ['Languages', project.stack?.languages ?? []],
+    ['Frameworks', project.stack?.frameworks ?? []],
+    ['Tools', project.stack?.tools ?? []],
+  ];
+  return groups
+    .map(([label, values]) => `${label}: ${values.length ? values.join(', ') : 'None detected'}`)
+    .join('\n');
+};
+
+const readinessSummary = (aiReadiness = {}) => {
+  const checks = aiReadiness.checks ?? [];
+  if (!checks.length) {
+    return {
+      label: `${aiReadiness.score ?? 0}% setup coverage`,
+      detail: 'No checklist details in this dataset.',
+      failed: [],
+      passed: 0,
+      total: 0,
+    };
+  }
+  const failed = checks.filter((check) => !check.passed);
+  const passed = checks.length - failed.length;
+  return {
+    label: failed.length ? `${failed.length} setup gap${failed.length === 1 ? '' : 's'}` : `${passed}/${checks.length} setup checks present`,
+    detail: failed.length
+      ? failed.map((check) => check.label).join('\n')
+      : `All ${checks.length} setup checks are present.`,
+    failed,
+    passed,
+    total: checks.length,
+  };
+};
+
+const riskCategory = (risk) => {
+  if (!risk) return 'Scanner evidence';
+  if (risk.id?.includes('env')) return 'Repo safety';
+  if (risk.id?.includes('readme')) return 'Setup context';
+  if (risk.id?.includes('test') || risk.id?.includes('ci')) return 'Project hygiene';
+  return 'Scanner evidence';
+};
+
+const topRiskFinding = (risks = []) => risks.reduce((highest, risk) => {
+  if (!highest) return risk;
+  return (riskSeverityRank[risk.severity] ?? 0) > (riskSeverityRank[highest.severity] ?? 0) ? risk : highest;
+}, null);
+
+const topDriftFinding = (drift = []) => drift.reduce((highest, item) => {
+  if (!highest) return item;
+  return (riskSeverityRank[item.severity] ?? 0) > (riskSeverityRank[highest.severity] ?? 0) ? item : highest;
+}, null);
+
+const projectArchetype = (project, isReference = false) => {
+  if (isReference) return 'Reference';
+  const scripts = project.scripts ?? {};
+  const stack = stackList(project);
+  const hasAppScript = ['dev', 'start', 'serve'].some((name) => name in scripts);
+  const hasBuild = 'build' in scripts;
+  if (hasAppScript || project.ci?.present || hasBuild) return 'App';
+  if (project.package?.manager && Object.keys(scripts).length > 0) return 'Library';
+  if (stack.includes('Python') || Object.keys(project.runtime?.files ?? {}).length > 0) return 'Script';
+  if (!project.git?.isRepo && !project.package?.manager) return 'Experiment';
+  return 'Unknown';
+};
+
+const conceptHelp = (type, { project, drift = [], isReference = false } = {}) => {
+  const readiness = readinessSummary(project?.aiReadiness ?? {});
+  const risk = topRiskFinding(project?.risks ?? []);
+  const driftItem = topDriftFinding(drift);
+  const help = {
+    stack: {
+      title: 'Stack',
+      body: project ? fullStackSummary(project) : 'Languages, frameworks, and tools detected from local project files.',
+    },
+    readiness: {
+      title: 'Setup readiness',
+      body: project
+        ? `${readiness.total ? `${readiness.passed}/${readiness.total} checks present.` : readiness.label}\n${readiness.detail}`
+        : 'A checklist of setup signals that make the project easier for a person or coding agent to enter.',
+    },
+    risk: {
+      title: 'Risk finding',
+      body: risk
+        ? `${riskCategory(risk)}: ${risk.title}\n${risk.detail}`
+        : `No hygiene findings from ${SCANNER_CHECK_SCOPE}.`,
+    },
+    drift: {
+      title: 'Reference differences',
+      body: isReference
+        ? 'This project is the reference. Other projects are compared against its conventions.'
+        : driftItem
+          ? `${drift.length} difference${drift.length === 1 ? '' : 's'} from the reference.\nTop difference: ${driftItem.category} - ${driftItem.detail}\nCurrent: ${driftItem.current}\nReference: ${driftItem.reference}`
+          : 'Matches the reference on package, scripts, docs, env, CI, and runtime hints checked by Aperture.',
+    },
+    dirty: {
+      title: 'Dirty worktree',
+      body: project?.git?.dirty
+        ? 'Git reports uncommitted local changes. Aperture only observes this state.'
+        : project?.git?.isRepo ? 'Git worktree appears clean.' : 'This project is not currently detected as a Git repository.',
+    },
+    reference: {
+      title: 'Reference project',
+      body: 'The baseline project used for advisory comparisons. Differences are facts, not failures.',
+    },
+  };
+  return help[type] ?? { title: 'Scanner evidence', body: 'A factual observation from local scanner output.' };
 };
 
 const readableValue = (value) => {
@@ -261,7 +377,7 @@ const createAttentionItems = (projects, driftMap = {}) => {
       items.push({ id: `${project.id}-dirty`, project, severity: 'medium', title: 'Dirty worktree', detail: `${project.name} has uncommitted local changes.` });
     }
     (project.risks ?? []).forEach((risk) => {
-      items.push({ id: `${project.id}-${risk.id}`, project, severity: risk.severity, title: risk.title, detail: risk.detail });
+      items.push({ id: `${project.id}-${risk.id}`, project, severity: risk.severity, title: `${riskCategory(risk)}: ${risk.title}`, detail: risk.detail });
     });
     if ((project.aiReadiness?.score ?? 0) < 60) {
       items.push({ id: `${project.id}-agent-readiness`, project, severity: 'medium', title: 'Agent readiness is low', detail: `${project.name} is missing context an AI agent would need.` });
@@ -271,7 +387,7 @@ const createAttentionItems = (projects, driftMap = {}) => {
         id: `${project.id}-drift-${drift.id}`,
         project,
         severity: drift.severity,
-        title: `${drift.category} drift`,
+        title: `${drift.category} reference difference`,
         detail: drift.detail,
       });
     });
@@ -393,20 +509,96 @@ const collectManualRisks = (docs, scripts, ci) => {
   return risks;
 };
 
-const StatCard = ({ title, value, icon: Icon, tone = 'indigo', onClick }) => {
+const createLineBreaks = (text) => String(text)
+  .split('\n')
+  .map((line, index) => (
+    <React.Fragment key={`${line}-${index}`}>
+      {index > 0 && <br />}
+      {line}
+    </React.Fragment>
+  ));
+
+const InfoPopover = ({ title, body, align = 'left' }) => (
+  <span className="info-popover" onClick={(event) => event.stopPropagation()}>
+    <span
+      className="info-popover__trigger"
+      tabIndex={0}
+      role="img"
+      aria-label={`${title}: ${String(body).replace(/\n/g, ' ')}`}
+    >
+      <CircleHelp size={13} />
+    </span>
+    <span className={`info-popover__panel info-popover__panel--${align}`} role="tooltip">
+      <span className="info-popover__title">{title}</span>
+      <span className="info-popover__body">{createLineBreaks(body)}</span>
+    </span>
+  </span>
+);
+
+const riskBreakdown = (projects) => {
+  const counts = projects
+    .flatMap((project) => project.risks ?? [])
+    .reduce((current, risk) => {
+      const category = riskCategory(risk);
+      return { ...current, [category]: (current[category] ?? 0) + 1 };
+    }, {});
+  const entries = Object.entries(counts);
+  return entries.length ? entries.map(([category, count]) => `${count} ${category.toLowerCase()}`).join(', ') : `No hygiene findings from ${SCANNER_CHECK_SCOPE}`;
+};
+
+const driftBreakdown = (projects, driftMap) => {
+  const counts = projects
+    .flatMap((project) => driftMap[project.id] ?? [])
+    .reduce((current, drift) => ({ ...current, [drift.category]: (current[drift.category] ?? 0) + 1 }), {});
+  const entries = Object.entries(counts);
+  return entries.length ? entries.map(([category, count]) => `${count} ${category.toLowerCase()}`).join(', ') : 'No reference differences detected';
+};
+
+const statBreakdown = (projects, driftMap) => {
+  const dirtyCount = projects.filter((project) => project.git?.dirty).length;
+  const avgReadiness = projects.length
+    ? Math.round(projects.reduce((sum, project) => sum + (project.aiReadiness?.score ?? 0), 0) / projects.length)
+    : 0;
+  const readinessGaps = projects.reduce((sum, project) => sum + readinessSummary(project.aiReadiness).failed.length, 0);
+  return {
+    projects: projects.length ? `${projects.length} local project${projects.length === 1 ? '' : 's'} mapped` : 'No projects mapped yet',
+    readiness: `${avgReadiness}% average, ${readinessGaps} setup gap${readinessGaps === 1 ? '' : 's'}`,
+    risks: riskBreakdown(projects),
+    dirty: dirtyCount ? `${dirtyCount} project${dirtyCount === 1 ? '' : 's'} with uncommitted changes` : 'All detected Git worktrees appear clean',
+    drift: driftBreakdown(projects, driftMap),
+  };
+};
+
+const StatCard = ({ title, value, icon: Icon, tone = 'indigo', onClick, summary, help }) => {
   const toneClass = tone === 'rose' ? 'bg-rose-500/10 text-rose-400' : tone === 'emerald' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-indigo-500/10 text-indigo-400';
-  const Component = onClick ? 'button' : 'div';
+  const handleKeyDown = (event) => {
+    if (!onClick || event.target !== event.currentTarget) return;
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      onClick();
+    }
+  };
   return (
-    <Component onClick={onClick} className={`rounded-xl border border-slate-800 bg-slate-900/50 p-4 text-left ${onClick ? 'stat-card--action' : ''}`}>
+    <div
+      onClick={onClick}
+      onKeyDown={handleKeyDown}
+      role={onClick ? 'button' : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      className={`rounded-xl border border-slate-800 bg-slate-900/50 p-4 text-left ${onClick ? 'stat-card--action' : ''}`}
+    >
       <div className="mb-3 flex items-start justify-between">
         <div className={`rounded-lg p-2 ${toneClass}`}>
           <Icon size={18} />
         </div>
-        {onClick && <ChevronRight size={18} className="text-slate-500" />}
+        <div className="flex items-center gap-2">
+          {help && <InfoPopover {...help} align="right" />}
+          {onClick && <ChevronRight size={18} className="text-slate-500" />}
+        </div>
       </div>
       <div className="text-2xl font-bold text-slate-100">{value}</div>
       <div className="mt-1 text-xs font-semibold uppercase tracking-wider text-slate-500">{title}</div>
-    </Component>
+      {summary && <div className="mt-2 text-xs font-medium leading-snug text-slate-500">{summary}</div>}
+    </div>
   );
 };
 
@@ -455,6 +647,22 @@ const ThemeSwitcher = ({ theme, onThemeChange }) => {
   );
 };
 
+const CardVersionSwitcher = ({ version, onVersionChange }) => (
+  <div className="card-version-switcher" aria-label="Card version">
+    {CARD_VERSIONS.map((option) => (
+      <button
+        key={option.id}
+        type="button"
+        className={version === option.id ? 'is-active' : ''}
+        onClick={() => onVersionChange(option.id)}
+        aria-pressed={version === option.id}
+      >
+        {option.label}
+      </button>
+    ))}
+  </div>
+);
+
 const AttentionButton = ({ count, unseenCount, open, onClick }) => (
   <button
     type="button"
@@ -472,7 +680,7 @@ const AttentionButton = ({ count, unseenCount, open, onClick }) => (
 
 const AttentionDrawer = ({ open, items, unseenIds, onClose, onSelectProject }) => (
   <>
-    {open && <button className="attention-drawer__scrim" type="button" aria-label="Close attention feed" onClick={onClose} />}
+    <button className={`attention-drawer__scrim ${open ? 'is-open' : ''}`} type="button" aria-label="Close attention feed" onClick={onClose} aria-hidden={!open} tabIndex={open ? 0 : -1} />
     <aside className={`attention-drawer ${open ? 'is-open' : ''}`} aria-hidden={!open}>
       <div className="attention-drawer__header">
         <div>
@@ -524,7 +732,7 @@ const AttentionDrawer = ({ open, items, unseenIds, onClose, onSelectProject }) =
 
 const InsightDrawer = ({ open, title, subtitle, emptyLabel, items, onClose, onSelectProject }) => (
   <>
-    {open && <button className="attention-drawer__scrim" type="button" aria-label={`Close ${title}`} onClick={onClose} />}
+    <button className={`attention-drawer__scrim ${open ? 'is-open' : ''}`} type="button" aria-label={`Close ${title}`} onClick={onClose} aria-hidden={!open} tabIndex={open ? 0 : -1} />
     <aside className={`attention-drawer ${open ? 'is-open' : ''}`} aria-hidden={!open}>
       <div className="attention-drawer__header">
         <div>
@@ -627,7 +835,7 @@ const ManualProjectDrawer = ({ open, onClose, onAddProject }) => {
 
   return (
     <>
-      {open && <button className="attention-drawer__scrim" type="button" aria-label="Close manual project form" onClick={onClose} />}
+      <button className={`attention-drawer__scrim ${open ? 'is-open' : ''}`} type="button" aria-label="Close manual project form" onClick={onClose} aria-hidden={!open} tabIndex={open ? 0 : -1} />
       <aside className={`attention-drawer manual-project-drawer ${open ? 'is-open' : ''}`} aria-hidden={!open}>
         <div className="attention-drawer__header">
           <div>
@@ -771,25 +979,177 @@ const TechPill = ({ tech }) => (
 );
 
 const StatusDot = ({ project }) => {
-  if (project.git?.dirty) return <span className="h-2 w-2 rounded-full bg-amber-400" title="Dirty worktree" />;
-  if (highestRisk(project)?.severity === 'high') return <span className="h-2 w-2 rounded-full bg-rose-500" title="High risk" />;
-  if (isRecentlyChanged(project)) return <span className="h-2 w-2 rounded-full bg-indigo-500" title="Recently changed" />;
-  return <span className="h-2 w-2 rounded-full bg-emerald-500" title="No urgent signals" />;
+  if (project.git?.dirty) return <span className="h-2 w-2 rounded-full bg-amber-400" aria-label="Dirty worktree" />;
+  if (highestRisk(project)?.severity === 'high') return <span className="h-2 w-2 rounded-full bg-rose-500" aria-label="High severity scanner finding" />;
+  if (isRecentlyChanged(project)) return <span className="h-2 w-2 rounded-full bg-indigo-500" aria-label="Recently changed" />;
+  return <span className="h-2 w-2 rounded-full bg-emerald-500" aria-label={`No hygiene findings from ${SCANNER_CHECK_SCOPE}`} />;
+};
+
+const openCardFromKeyboard = (event, project, onSelect) => {
+  if (event.target !== event.currentTarget) return;
+  if (event.key === 'Enter' || event.key === ' ') {
+    event.preventDefault();
+    onSelect(project);
+  }
+};
+
+const riskMeaning = (risk) => {
+  if (!risk) return `Checked ${SCANNER_CHECK_SCOPE}`;
+  if (risk.id?.includes('env')) return 'Inspect repository safety';
+  if (risk.id?.includes('test')) return 'Validation path is unclear';
+  if (risk.id?.includes('readme')) return 'Setup context may be missing';
+  if (risk.id?.includes('ci')) return 'Automation path is unclear';
+  return 'Scanner evidence needs review';
+};
+
+const driftMeaning = (drift) => {
+  if (!drift.length) return 'No reference differences in checked areas';
+  const top = topDriftFinding(drift);
+  return `${top.category} differs from reference`;
+};
+
+const driftWhyShown = (item) => `Shown because ${item.category.toLowerCase()} differs from the selected reference project. This is an advisory difference, not a failure.`;
+
+const riskWhyShown = (risk) => `Shown because scanner evidence matched ${riskCategory(risk).toLowerCase()}: ${risk.detail}`;
+
+const suggestedFilesForProject = (project) => {
+  const files = [
+    ...(project.docs?.files ?? []),
+    ...(project.docs?.agentContextFiles ?? []),
+    ...Object.keys(project.runtime?.files ?? {}),
+    ...(project.env?.examples ?? []),
+    ...(project.ci?.paths ?? []),
+  ];
+  return [...new Set(files)].slice(0, 6);
+};
+
+const agentBriefLines = (project, drift = []) => {
+  const stack = stackList(project);
+  const risk = topRiskFinding(project.risks ?? []);
+  const setup = readinessSummary(project.aiReadiness);
+  const scripts = Object.keys(project.scripts ?? {});
+  const files = suggestedFilesForProject(project);
+  return [
+    `Project: ${project.name}`,
+    `Path: ${project.path}`,
+    `Stack: ${stack.length ? stack.join(', ') : 'Unknown'}`,
+    `Package: ${project.package?.manager ?? 'None'}; scripts: ${scripts.length ? scripts.join(', ') : 'none detected'}`,
+    `Git: ${project.git?.isRepo ? `${project.git?.branch ?? 'detached'}; ${project.git?.dirty ? 'dirty worktree' : 'clean worktree'}` : 'not a Git repo'}`,
+    `Setup: ${setup.total ? `${setup.passed}/${setup.total} checks present` : `${project.aiReadiness?.score ?? 0}% coverage`}`,
+    `Top risk: ${risk ? `${riskCategory(risk)} - ${risk.title}` : `No hygiene findings from ${SCANNER_CHECK_SCOPE}`}`,
+    `Reference: ${drift.length ? `${drift.length} difference${drift.length === 1 ? '' : 's'}; ${driftMeaning(drift)}` : 'No reference differences detected'}`,
+    `Inspect first: ${files.length ? files.join(', ') : 'README, package metadata, and project entrypoints if present'}`,
+  ];
+};
+
+const ExperimentalProjectCard = ({ project, onSelect, drift = [], isReference }) => {
+  const stack = stackList(project);
+  const risk = topRiskFinding(project.risks ?? []);
+  const readiness = project.aiReadiness?.score ?? 0;
+  const setup = readinessSummary(project.aiReadiness);
+  const archetype = projectArchetype(project, isReference);
+  const riskLabel = risk ? `${riskCategory(risk)}: ${risk.title}` : 'No hygiene findings';
+  const driftLabel = isReference ? 'Reference project' : drift.length ? `${drift.length} reference difference${drift.length === 1 ? '' : 's'}` : 'No reference differences';
+  const scriptsCount = Object.keys(project.scripts ?? {}).length;
+  const branchLabel = project.git?.branch ?? (project.git?.isRepo ? 'detached' : 'not git');
+
+  return (
+    <article
+      onClick={() => onSelect(project)}
+      onKeyDown={(event) => openCardFromKeyboard(event, project, onSelect)}
+      className="project-card-exp"
+      role="button"
+      tabIndex={0}
+      aria-label={`Open ${project.name}`}
+    >
+      <div className="project-card-exp__topline">
+        <span className="project-card-exp__eyebrow">
+          {archetype}
+          {isReference && <InfoPopover {...conceptHelp('reference', { project, drift, isReference })} />}
+        </span>
+        <span className={`project-card-exp__state project-card-exp__state--${readiness >= 80 ? 'good' : readiness >= 50 ? 'watch' : 'risk'}`}>
+          {setup.label}
+          <InfoPopover {...conceptHelp('readiness', { project, drift, isReference })} align="right" />
+        </span>
+      </div>
+
+      <div className="project-card-exp__hero">
+        <div className="project-card-exp__identity">
+          <h3>{project.name}</h3>
+          <p>{project.path}</p>
+        </div>
+        <div className="project-card-exp__score">
+          <span>{readiness}</span>
+          <small>%</small>
+        </div>
+      </div>
+
+      <div className="project-card-exp__facts">
+        <div className="project-card-exp__fact">
+          <span>Stack <InfoPopover {...conceptHelp('stack', { project, drift, isReference })} /></span>
+          <strong>{stack.slice(0, 3).join(' / ') || 'Unknown'}</strong>
+        </div>
+        <div className="project-card-exp__fact">
+          <span>Branch</span>
+          <strong>{branchLabel}</strong>
+        </div>
+        <div className="project-card-exp__fact">
+          <span>Package</span>
+          <strong>{project.package?.manager ?? 'None'} · {scriptsCount} scripts</strong>
+        </div>
+        <div className="project-card-exp__readiness">
+          <span style={{ width: `${Math.max(5, Math.min(100, readiness))}%` }} />
+        </div>
+      </div>
+
+      <div className="project-card-exp__signals">
+        <span className={risk ? 'is-active is-risk' : ''}>
+          {riskLabel}
+          <small>{riskMeaning(risk)}</small>
+          <InfoPopover {...conceptHelp('risk', { project, drift, isReference })} />
+        </span>
+        <span className={drift.length ? 'is-active is-drift' : ''}>
+          {driftLabel}
+          <small>{driftMeaning(drift)}</small>
+          <InfoPopover {...conceptHelp('drift', { project, drift, isReference })} />
+        </span>
+        <span className={project.git?.dirty ? 'is-active is-dirty' : ''}>
+          {project.git?.dirty ? 'Dirty worktree' : 'Clean worktree'}
+          <small>{project.git?.dirty ? 'Uncommitted local changes' : project.git?.isRepo ? 'No uncommitted changes detected' : 'Not detected as Git'}</small>
+          <InfoPopover {...conceptHelp('dirty', { project, drift, isReference })} />
+        </span>
+      </div>
+
+      <div className="project-card-exp__footer">
+        <span>Open project</span>
+        <span className="project-card-exp__open">
+          <ChevronRight size={15} />
+        </span>
+      </div>
+    </article>
+  );
 };
 
 const ProjectCard = ({ project, onSelect, drift = [], isReference }) => {
   const stack = stackList(project);
-  const risk = highestRisk(project);
+  const risk = topRiskFinding(project.risks ?? []);
   const readiness = project.aiReadiness?.score ?? 0;
-  const highDrift = drift.some((item) => item.severity === 'high');
+  const setup = readinessSummary(project.aiReadiness);
+  const archetype = projectArchetype(project, isReference);
+  const riskLabel = risk ? `${riskCategory(risk)}: ${risk.title}` : 'No hygiene findings';
+  const driftLabel = isReference ? 'Reference project' : drift.length ? `${drift.length} reference difference${drift.length === 1 ? '' : 's'}` : 'No reference differences';
   return (
-    <button
+    <article
       onClick={() => onSelect(project)}
+      onKeyDown={(event) => openCardFromKeyboard(event, project, onSelect)}
       className="group relative rounded-xl border border-slate-800 bg-slate-900 p-5 text-left transition-all hover:border-indigo-500/50 hover:bg-slate-900/80"
+      role="button"
+      tabIndex={0}
+      aria-label={`Open ${project.name}`}
     >
       {risk?.severity === 'high' && (
         <div className="absolute right-0 top-0 rounded-bl-lg bg-rose-600 px-3 py-1 text-[10px] font-black uppercase text-white">
-          Risk
+          {riskCategory(risk)}
         </div>
       )}
       {isReference && (
@@ -800,27 +1160,32 @@ const ProjectCard = ({ project, onSelect, drift = [], isReference }) => {
 
       <div className="mb-4 flex items-start justify-between gap-4">
         <div className="min-w-0">
+          <div className="mb-2 flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-slate-500">
+            {archetype}
+            {isReference && <InfoPopover {...conceptHelp('reference', { project, drift, isReference })} />}
+          </div>
           <h3 className="flex items-center gap-2 truncate text-lg font-bold text-slate-100 transition-colors group-hover:text-indigo-400">
             {project.name}
             {risk && <ShieldAlert size={16} className={risk.severity === 'high' ? 'text-rose-500' : 'text-amber-400'} />}
-            {drift.length > 0 && <GitCompareArrows size={16} className={highDrift ? 'text-rose-400' : 'text-amber-400'} />}
+            {drift.length > 0 && <GitCompareArrows size={16} className={topDriftFinding(drift)?.severity === 'high' ? 'text-rose-400' : 'text-amber-400'} />}
           </h3>
           <p className="mt-1 flex items-center gap-1 truncate font-mono text-xs text-slate-500">
             <FolderOpen size={12} /> {project.path}
           </p>
         </div>
         <div className="text-right">
-          <div className={`font-mono text-sm font-bold ${readiness >= 80 ? 'text-emerald-400' : readiness >= 50 ? 'text-amber-400' : 'text-rose-400'}`}>
-            {readiness}%
+          <div className={`flex items-center justify-end gap-1 font-mono text-sm font-bold ${setup.failed.length ? 'text-amber-400' : 'text-emerald-400'}`}>
+            {setup.total ? `${setup.passed}/${setup.total}` : `${readiness}%`}
+            <InfoPopover {...conceptHelp('readiness', { project, drift, isReference })} align="right" />
           </div>
-          <div className="text-[10px] font-bold uppercase tracking-widest text-slate-600">AI ready</div>
+          <div className="text-[10px] font-bold uppercase tracking-widest text-slate-600">Setup checks</div>
         </div>
       </div>
 
       <div className="mb-6 grid grid-cols-2 gap-4">
         <div>
           <div className="mb-2 flex items-center gap-1 text-[10px] font-bold uppercase tracking-widest text-slate-500">
-            <Dna size={10} /> Stack
+            <Dna size={10} /> Stack <InfoPopover {...conceptHelp('stack', { project, drift, isReference })} />
           </div>
           <div className="flex flex-wrap gap-1">
             {stack.slice(0, 4).map((tech) => <TechPill key={tech} tech={tech} />)}
@@ -834,9 +1199,27 @@ const ProjectCard = ({ project, onSelect, drift = [], isReference }) => {
           </div>
           <div className="font-mono text-sm font-bold text-slate-300">{project.package?.manager ?? 'None'}</div>
           <div className="mt-1 text-xs text-slate-500">{Object.keys(project.scripts ?? {}).length} scripts</div>
-          <div className={`mt-1 text-xs font-bold ${drift.length ? 'text-amber-400' : 'text-emerald-400'}`}>
-            {isReference ? 'Reference' : `${drift.length} drift`}
+          <div className={`mt-1 flex items-center gap-1 text-xs font-bold ${drift.length ? 'text-amber-400' : 'text-emerald-400'}`}>
+            {driftLabel}
+            <InfoPopover {...conceptHelp('drift', { project, drift, isReference })} align="right" />
           </div>
+        </div>
+      </div>
+
+      <div className="mb-5 grid gap-2">
+        <div className={`evidence-line ${risk ? 'evidence-line--risk' : 'evidence-line--good'}`}>
+          <div>
+            <strong>{riskLabel}</strong>
+            <span>{riskMeaning(risk)}</span>
+          </div>
+          <InfoPopover {...conceptHelp('risk', { project, drift, isReference })} align="right" />
+        </div>
+        <div className={`evidence-line ${project.git?.dirty ? 'evidence-line--dirty' : 'evidence-line--good'}`}>
+          <div>
+            <strong>{project.git?.dirty ? 'Dirty worktree' : 'Clean worktree'}</strong>
+            <span>{project.git?.dirty ? 'Uncommitted local changes detected' : project.git?.isRepo ? 'No uncommitted changes detected' : 'Not detected as Git'}</span>
+          </div>
+          <InfoPopover {...conceptHelp('dirty', { project, drift, isReference })} align="right" />
         </div>
       </div>
 
@@ -858,17 +1241,18 @@ const ProjectCard = ({ project, onSelect, drift = [], isReference }) => {
           <StatusDot project={project} />
         </div>
       </div>
-    </button>
+    </article>
   );
 };
 
-const ProjectDrawer = ({ project, onClose, drift = [], referenceProject, isReference }) => {
+const ProjectDrawer = ({ project, open, onClose, drift = [], referenceProject, isReference }) => {
   const risks = project.risks ?? [];
   const checks = project.aiReadiness?.checks ?? [];
+  const briefLines = agentBriefLines(project, drift);
   return (
     <>
-      <button className="attention-drawer__scrim" type="button" aria-label={`Close ${project.name}`} onClick={onClose} />
-      <aside className="project-drawer is-open" aria-label={`${project.name} details`}>
+      <button className={`attention-drawer__scrim ${open ? 'is-open' : ''}`} type="button" aria-label={`Close ${project.name}`} onClick={onClose} aria-hidden={!open} tabIndex={open ? 0 : -1} />
+      <aside className={`project-drawer ${open ? 'is-open' : ''}`} aria-label={`${project.name} details`} aria-hidden={!open}>
         <div className="attention-drawer__header">
           <div>
             <h2 className="flex items-center gap-2 text-xl font-bold text-slate-100">
@@ -882,97 +1266,114 @@ const ProjectDrawer = ({ project, onClose, drift = [], referenceProject, isRefer
         </div>
 
         <div className="project-drawer__body custom-scrollbar">
-          <section className="grid gap-4 md:grid-cols-3">
-            <div className="rounded-xl border border-slate-800 bg-slate-800/20 p-4">
-              <div className="text-xs font-bold uppercase tracking-widest text-slate-500">Branch</div>
-              <div className="mt-2 font-mono text-sm font-bold text-slate-200">{project.git?.branch ?? 'Unknown'}</div>
+          <section className="project-drawer__stats">
+            <div className="project-drawer__stat">
+              <div className="project-drawer__label">Branch</div>
+              <div className="project-drawer__value font-mono">{project.git?.branch ?? 'Unknown'}</div>
             </div>
-            <div className="rounded-xl border border-slate-800 bg-slate-800/20 p-4">
-              <div className="text-xs font-bold uppercase tracking-widest text-slate-500">Worktree</div>
-              <div className={`mt-2 text-sm font-bold ${project.git?.dirty ? 'text-amber-400' : 'text-emerald-400'}`}>{project.git?.dirty ? 'Dirty' : project.git?.isRepo ? 'Clean' : 'Not a Git repo'}</div>
+            <div className="project-drawer__stat">
+              <div className="project-drawer__label">Worktree</div>
+              <div className={`project-drawer__value ${project.git?.dirty ? 'text-amber-400' : 'text-emerald-400'}`}>{project.git?.dirty ? 'Dirty' : project.git?.isRepo ? 'Clean' : 'Not a Git repo'}</div>
             </div>
-            <div className="rounded-xl border border-slate-800 bg-slate-800/20 p-4">
-              <div className="text-xs font-bold uppercase tracking-widest text-slate-500">Last Commit</div>
-              <div className="mt-2 text-sm font-bold text-slate-200">{formatDate(project.git?.lastCommit?.date)}</div>
+            <div className="project-drawer__stat">
+              <div className="project-drawer__label">Last Commit</div>
+              <div className="project-drawer__value">{formatDate(project.git?.lastCommit?.date)}</div>
             </div>
           </section>
 
-          <section className="rounded-xl border border-indigo-500/20 bg-indigo-500/5 p-4">
-            <div className="mb-3 flex items-center justify-between">
-              <h3 className="flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-indigo-400"><Cpu size={14} /> AI Readiness</h3>
-              <span className="text-sm font-bold text-slate-100">{project.aiReadiness?.score ?? 0}%</span>
+          <section className="project-drawer__panel project-drawer__panel--readiness">
+            <div className="project-drawer__section-heading">
+              <h3><Cpu size={14} /> Setup Readiness</h3>
+              <span>{readinessSummary(project.aiReadiness).label}</span>
             </div>
-            <div className="mb-4 h-2 overflow-hidden rounded-full bg-slate-800">
-              <div className="h-full rounded-full bg-indigo-500" style={{ width: `${project.aiReadiness?.score ?? 0}%` }} />
+            <div className="project-drawer__meter">
+              <div style={{ width: `${project.aiReadiness?.score ?? 0}%` }} />
             </div>
-            <div className="grid gap-2 md:grid-cols-2">
+            <div className="project-drawer__check-grid">
               {checks.length > 0 ? checks.map((check) => (
-                <div key={check.id} className="flex items-center gap-2 text-sm text-slate-300">
+                <div key={check.id} className="project-drawer__check">
                   {check.passed ? <CheckCircle2 size={15} className="text-emerald-400" /> : <AlertTriangle size={15} className="text-amber-400" />}
-                  {check.label}
+                  <span>{check.label}</span>
                 </div>
               )) : <span className="text-sm text-slate-500">No checklist details in this dataset.</span>}
             </div>
           </section>
 
           <section>
-            <div className="mb-3 flex items-center justify-between gap-4">
-              <h3 className="flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-slate-500">
-                <GitCompareArrows size={14} /> Reference Drift
+            <div className="project-drawer__section-heading project-drawer__section-heading--subtle">
+              <h3>
+                <GitCompareArrows size={14} /> Reference Differences
               </h3>
-              <span className="text-xs font-bold text-slate-500">
+              <span>
                 vs. {referenceProject?.name ?? 'reference'}
               </span>
             </div>
             {isReference ? (
-              <div className="rounded-xl border border-indigo-500/20 bg-indigo-500/5 p-5 text-sm text-indigo-200">
+              <div className="project-drawer__panel project-drawer__empty">
                 This project is the current reference. Other projects are compared against it.
               </div>
             ) : drift.length > 0 ? (
-              <div className="space-y-3">
+              <div className="project-drawer__stack">
                 {drift.map((item) => (
-                  <div key={item.id} className={`rounded-xl border p-4 ${severityStyles[item.severity] || severityStyles.medium}`}>
-                    <div className="flex items-start justify-between gap-4">
+                  <div key={item.id} className={`project-drawer__drift-card ${severityStyles[item.severity] || severityStyles.medium}`}>
+                    <div className="project-drawer__drift-head">
                       <div>
-                        <div className="text-sm font-bold">{item.category}</div>
-                        <div className="mt-1 text-xs opacity-80">{item.detail}</div>
+                        <div className="project-drawer__drift-title">{item.category}</div>
+                        <div className="project-drawer__drift-detail">{item.detail}</div>
+                        <div className="project-drawer__why">{driftWhyShown(item)}</div>
                       </div>
-                      <div className="text-right text-[10px] font-black uppercase tracking-widest opacity-70">Advisory</div>
+                      <div className="project-drawer__tag">Advisory</div>
                     </div>
-                    <div className="mt-3 flex flex-wrap items-center gap-2 font-mono text-xs">
-                      <span className="rounded bg-slate-950/40 px-2 py-1 text-rose-200">{item.current}</span>
-                      <ChevronRight size={13} className="opacity-60" />
-                      <span className="rounded bg-slate-950/40 px-2 py-1 text-emerald-200">{item.reference}</span>
+                    <div className="project-drawer__diff-row">
+                      <span className="project-drawer__diff-value project-drawer__diff-value--current">{item.current}</span>
+                      <ChevronRight size={13} className="project-drawer__diff-arrow" />
+                      <span className="project-drawer__diff-value project-drawer__diff-value--reference">{item.reference}</span>
                     </div>
                   </div>
                 ))}
               </div>
             ) : (
-              <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-6 text-center text-emerald-300">
-                <CheckCircle2 className="mx-auto mb-2" /> No reference drift detected.
+              <div className="project-drawer__panel project-drawer__empty text-emerald-300">
+                <CheckCircle2 className="mx-auto mb-2" /> Matches the reference on package, scripts, docs, env, CI, and runtime hints checked by Aperture.
               </div>
             )}
           </section>
 
           <section>
-            <h3 className="mb-3 flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-slate-500"><ShieldAlert size={14} /> Risk Radar</h3>
-            <div className="space-y-3">
+            <div className="project-drawer__section-heading project-drawer__section-heading--subtle">
+              <h3><ShieldAlert size={14} /> Risk Radar</h3>
+            </div>
+            <div className="project-drawer__stack">
               {risks.length > 0 ? risks.map((risk) => (
-                <div key={`${risk.id}-${risk.detail}`} className={`rounded-xl border p-4 ${severityStyles[risk.severity] || severityStyles.low}`}>
-                  <div className="text-sm font-bold">{risk.title}</div>
-                  <div className="mt-1 text-xs opacity-80">{risk.detail}</div>
+                <div key={`${risk.id}-${risk.detail}`} className={`project-drawer__drift-card ${severityStyles[risk.severity] || severityStyles.low}`}>
+                  <div className="project-drawer__drift-title">{riskCategory(risk)}: {risk.title}</div>
+                  <div className="project-drawer__drift-detail">{risk.detail}</div>
+                  <div className="project-drawer__why">{riskWhyShown(risk)}</div>
                 </div>
               )) : (
-                <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-6 text-center text-emerald-300">
-                  <CheckCircle2 className="mx-auto mb-2" /> No scanner risks detected.
+                <div className="project-drawer__panel project-drawer__empty text-emerald-300">
+                  <CheckCircle2 className="mx-auto mb-2" /> No hygiene findings from {SCANNER_CHECK_SCOPE}.
                 </div>
               )}
             </div>
           </section>
 
-          <section className="rounded-xl border border-slate-800 bg-slate-800/20 p-4">
-            <h3 className="mb-3 flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-slate-500"><FileJson size={14} /> Useful Commands</h3>
-            <div className="grid gap-2 md:grid-cols-2">
+          <section className="project-drawer__panel">
+            <div className="project-drawer__section-heading project-drawer__section-heading--subtle">
+              <h3><FileJson size={14} /> Agent Brief Preview</h3>
+            </div>
+            <div className="agent-brief-preview">
+              {briefLines.map((line) => (
+                <div key={line}>{line}</div>
+              ))}
+            </div>
+          </section>
+
+          <section className="project-drawer__panel">
+            <div className="project-drawer__section-heading project-drawer__section-heading--subtle">
+              <h3><FileJson size={14} /> Useful Commands</h3>
+            </div>
+            <div className="project-drawer__command-grid">
               {Object.entries(project.scripts ?? {}).length > 0 ? Object.entries(project.scripts).map(([name, command]) => (
                 <div key={name} className="rounded-lg bg-slate-950/50 p-3 font-mono text-xs">
                   <span className="text-indigo-300">{name}</span><span className="text-slate-600">: </span><span className="text-slate-300">{command}</span>
@@ -986,7 +1387,48 @@ const ProjectDrawer = ({ project, onClose, drift = [], referenceProject, isRefer
   );
 };
 
-const Sidebar = () => (
+const SettingsModal = ({ open, projects, referenceProjectId, onReferenceProjectChange, onClose }) => (
+  <>
+    <button className={`settings-modal__scrim ${open ? 'is-open' : ''}`} type="button" aria-label="Close settings" onClick={onClose} aria-hidden={!open} tabIndex={open ? 0 : -1} />
+    <section className={`settings-modal ${open ? 'is-open' : ''}`} role="dialog" aria-modal="true" aria-labelledby="settings-title" aria-hidden={!open}>
+      <div className="settings-modal__header">
+        <div>
+          <div className="text-xs font-black uppercase tracking-[0.24em] text-indigo-300">Settings</div>
+          <h2 id="settings-title" className="mt-1 text-xl font-black tracking-tight text-slate-100">Workspace preferences</h2>
+          <p className="mt-1 text-xs font-bold text-slate-500">Configure how Aperture compares and presents this workspace.</p>
+        </div>
+        <button type="button" className="attention-drawer__close" onClick={onClose} aria-label="Close settings">
+          <X size={18} />
+        </button>
+      </div>
+
+      <div className="settings-modal__body">
+        <div className="settings-modal__setting">
+          <div>
+            <h3 className="settings-modal__setting-title">
+              <GitCompareArrows size={16} /> Reference Project
+            </h3>
+            <p className="settings-modal__setting-copy">Choose the gold-standard project. Drift remains advisory and read-only.</p>
+          </div>
+          <select
+            className="settings-modal__select"
+            value={referenceProjectId}
+            onChange={(event) => onReferenceProjectChange(event.target.value)}
+            disabled={projects.length === 0}
+          >
+            {projects.length > 0 ? projects.map((project) => (
+              <option key={project.id} value={project.id}>{project.name}</option>
+            )) : (
+              <option value="">No projects available</option>
+            )}
+          </select>
+        </div>
+      </div>
+    </section>
+  </>
+);
+
+const Sidebar = ({ settingsOpen, onOpenSettings }) => (
   <aside className="flex w-20 flex-col items-center border-r border-slate-800 bg-slate-950 py-8 transition-all lg:w-64 lg:items-stretch">
     <div className="mb-12 flex items-center gap-3 px-6">
       <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-indigo-600">
@@ -997,13 +1439,13 @@ const Sidebar = () => (
 
     <nav className="flex-1 space-y-2 px-4">
       {[
-        { name: 'Workspace', icon: LayoutDashboard, active: true },
+        { name: 'Workspace', icon: LayoutDashboard, active: !settingsOpen },
         { name: 'Attention', icon: AlertTriangle, active: false },
         { name: 'Risk Radar', icon: ShieldAlert, active: false },
         { name: 'Agent Briefs', icon: FileJson, active: false },
-        { name: 'Settings', icon: Settings, active: false },
+        { name: 'Settings', icon: Settings, active: settingsOpen, onClick: onOpenSettings },
       ].map((item) => (
-        <button key={item.name} className={`flex w-full items-center justify-center gap-4 rounded-xl p-3 transition-all lg:justify-start ${item.active ? 'bg-indigo-600/10 text-indigo-400' : 'text-slate-500 hover:bg-slate-900 hover:text-slate-300'}`}>
+        <button key={item.name} type="button" onClick={item.onClick} className={`flex w-full items-center justify-center gap-4 rounded-xl p-3 transition-all lg:justify-start ${item.active ? 'bg-indigo-600/10 text-indigo-400' : 'text-slate-500 hover:bg-slate-900 hover:text-slate-300'}`}>
           <item.icon size={20} />
           <span className="hidden text-sm font-bold lg:inline">{item.name}</span>
         </button>
@@ -1026,13 +1468,17 @@ export default function App() {
   const [scan, setScan] = useState(null);
   const [dataStatus, setDataStatus] = useState('loading');
   const [selectedProject, setSelectedProject] = useState(null);
+  const [projectDrawerOpen, setProjectDrawerOpen] = useState(false);
   const [theme, setTheme] = useState(() => localStorage.getItem('aperture-theme') || localStorage.getItem('aperture-theme-mode') || 'dark');
   const [attentionOpen, setAttentionOpen] = useState(false);
   const [insightDrawer, setInsightDrawer] = useState(null);
   const [manualProjectFormOpen, setManualProjectFormOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [manualProjects, setManualProjects] = useState(readManualProjects);
   const [seenAttentionIds, setSeenAttentionIds] = useState(readSeenAttentionIds);
   const [referenceProjectId, setReferenceProjectId] = useState(() => localStorage.getItem('aperture-reference-project') || '');
+  const [cardVersion, setCardVersion] = useState(() => localStorage.getItem('aperture-card-version') || 'original');
+  const projectCloseTimer = useRef(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -1075,6 +1521,27 @@ export default function App() {
     localStorage.setItem(MANUAL_PROJECTS_STORAGE_KEY, JSON.stringify(manualProjects));
   }, [manualProjects]);
 
+  useEffect(() => {
+    localStorage.setItem('aperture-card-version', cardVersion);
+  }, [cardVersion]);
+
+  useEffect(() => {
+    if (!settingsOpen) return undefined;
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        setSettingsOpen(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [settingsOpen]);
+
+  useEffect(() => () => {
+    if (projectCloseTimer.current) {
+      window.clearTimeout(projectCloseTimer.current);
+    }
+  }, []);
+
   const projects = useMemo(() => [...(scan?.projects ?? []), ...manualProjects], [scan?.projects, manualProjects]);
   const workspaceRootLabel = scan?.workspaceRoot ?? (manualProjects.length ? 'Manual entries' : '');
   const shouldShowDashboard = dataStatus === 'live' || manualProjects.length > 0;
@@ -1100,13 +1567,14 @@ export default function App() {
     }
   }, [referenceProject?.id]);
   const driftMap = useMemo(() => createDriftMap(projects, referenceProject), [projects, referenceProject]);
+  const ProjectCardComponent = cardVersion === 'experiment' ? ExperimentalProjectCard : ProjectCard;
 
   const attentionItems = useMemo(() => createAttentionItems(projects, driftMap), [projects, driftMap]);
   const riskItems = useMemo(() => projects.flatMap((project) => (project.risks ?? []).map((risk) => ({
     id: `${project.id}-${risk.id}`,
     project,
     severity: risk.severity,
-    title: risk.title,
+    title: `${riskCategory(risk)}: ${risk.title}`,
     detail: risk.detail,
   }))), [projects]);
   const dirtyItems = useMemo(() => projects.filter((project) => project.git?.dirty).map((project) => ({
@@ -1121,7 +1589,7 @@ export default function App() {
     id: `${project.id}-drift-${drift.id}`,
     project,
     severity: drift.severity,
-    title: `${drift.category} drift`,
+    title: `${drift.category} reference difference`,
     detail: drift.detail,
   }))), [projects, driftMap]);
   const seenAttentionSet = useMemo(() => new Set(seenAttentionIds), [seenAttentionIds]);
@@ -1135,6 +1603,26 @@ export default function App() {
     localStorage.setItem('aperture-seen-attention', JSON.stringify(ids));
     setAttentionOpen(false);
   };
+  const openProjectDrawer = (project) => {
+    if (projectCloseTimer.current) {
+      window.clearTimeout(projectCloseTimer.current);
+      projectCloseTimer.current = null;
+    }
+    setSelectedProject(project);
+    window.requestAnimationFrame(() => {
+      setProjectDrawerOpen(true);
+    });
+  };
+  const closeProjectDrawer = () => {
+    if (projectCloseTimer.current) {
+      window.clearTimeout(projectCloseTimer.current);
+    }
+    setProjectDrawerOpen(false);
+    projectCloseTimer.current = window.setTimeout(() => {
+      setSelectedProject(null);
+      projectCloseTimer.current = null;
+    }, 420);
+  };
   const stats = useMemo(() => {
     const riskCount = projects.reduce((sum, project) => sum + (project.risks?.length ?? 0), 0);
     const driftCount = projects.reduce((sum, project) => sum + (driftMap[project.id]?.length ?? 0), 0);
@@ -1144,12 +1632,23 @@ export default function App() {
       : 0;
     return { totalProjects: projects.length, riskCount, driftCount, dirtyCount, avgReadiness };
   }, [projects, driftMap]);
+  const statSummaries = useMemo(() => statBreakdown(projects, driftMap), [projects, driftMap]);
+  const glossaryHelp = {
+    title: 'Workspace Map glossary',
+    body: [
+      'Risk: local hygiene evidence from scanner checks.',
+      'Drift: factual differences from the selected reference project.',
+      'Setup readiness: checklist coverage for agent and human handoff.',
+      'Dirty worktree: Git reports uncommitted local changes.',
+      'Scanner evidence: observed local files or Git metadata; read-only.',
+    ].join('\n'),
+  };
 
   return (
     <div className="aperture-app flex h-screen bg-slate-950 font-sans text-slate-300 selection:bg-indigo-500/30">
-      <Sidebar />
+      <Sidebar settingsOpen={settingsOpen} onOpenSettings={() => setSettingsOpen(true)} />
       <main className="flex flex-1 flex-col overflow-hidden">
-        <header className="sticky top-0 z-10 flex min-h-20 items-center justify-between gap-4 border-b border-slate-800 bg-slate-950/50 px-4 backdrop-blur-md md:px-8">
+        <header className="sticky top-0 z-10 flex min-h-20 flex-wrap items-center justify-between gap-4 border-b border-slate-800 bg-slate-950/50 px-4 backdrop-blur-md md:px-8">
           <div className="flex flex-1 items-center gap-3">
             <div className="text-xs font-black uppercase tracking-[0.28em] text-indigo-300">Aperture</div>
           </div>
@@ -1163,6 +1662,10 @@ export default function App() {
             <Plus size={18} />
             <span className="hidden text-xs font-black uppercase tracking-widest lg:inline">Add</span>
           </button>
+          <CardVersionSwitcher
+            version={cardVersion}
+            onVersionChange={setCardVersion}
+          />
           <AttentionButton
             count={attentionItems.length}
             unseenCount={unseenAttentionIds.size}
@@ -1189,31 +1692,11 @@ export default function App() {
           {shouldShowDashboard && (
             <>
           <section className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-5">
-            <StatCard title="Projects Mapped" value={stats.totalProjects} icon={FolderOpen} />
-            <StatCard title="Avg AI Readiness" value={`${stats.avgReadiness}%`} icon={Cpu} tone="emerald" />
-            <StatCard title="Risk Findings" value={stats.riskCount} icon={ShieldAlert} tone={stats.riskCount ? 'rose' : 'emerald'} onClick={() => setInsightDrawer('risks')} />
-            <StatCard title="Dirty Worktrees" value={stats.dirtyCount} icon={GitBranch} tone={stats.dirtyCount ? 'rose' : 'emerald'} onClick={() => setInsightDrawer('dirty')} />
-            <StatCard title="Reference Drift" value={stats.driftCount} icon={GitCompareArrows} tone={stats.driftCount ? 'rose' : 'emerald'} onClick={() => setInsightDrawer('drift')} />
-          </section>
-
-          <section className="rounded-2xl border border-slate-800 bg-slate-900/40 p-5">
-            <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-              <div>
-                <h3 className="flex items-center gap-2 text-lg font-bold text-slate-100">
-                  <GitCompareArrows size={18} className="text-indigo-300" /> Reference Project
-                </h3>
-                <p className="mt-1 text-sm text-slate-500">Choose the gold-standard project. Drift stays advisory and read-only.</p>
-              </div>
-              <select
-                className="rounded-xl border border-slate-800 bg-slate-950 px-4 py-3 text-sm font-bold text-slate-200 outline-none transition-colors focus:border-indigo-500/60"
-                value={referenceProject?.id ?? ''}
-                onChange={(event) => setReferenceProjectId(event.target.value)}
-              >
-                {projects.map((project) => (
-                  <option key={project.id} value={project.id}>{project.name}</option>
-                ))}
-              </select>
-            </div>
+            <StatCard title="Projects Mapped" value={stats.totalProjects} icon={FolderOpen} summary={statSummaries.projects} help={{ title: 'Projects mapped', body: 'Projects currently shown from generated scanner output plus manual browser entries.' }} />
+            <StatCard title="Avg Setup Readiness" value={`${stats.avgReadiness}%`} icon={Cpu} tone="emerald" summary={statSummaries.readiness} help={conceptHelp('readiness')} />
+            <StatCard title="Risk Findings" value={stats.riskCount} icon={ShieldAlert} tone={stats.riskCount ? 'rose' : 'emerald'} summary={statSummaries.risks} help={conceptHelp('risk')} onClick={() => setInsightDrawer('risks')} />
+            <StatCard title="Dirty Worktrees" value={stats.dirtyCount} icon={GitBranch} tone={stats.dirtyCount ? 'rose' : 'emerald'} summary={statSummaries.dirty} help={conceptHelp('dirty')} onClick={() => setInsightDrawer('dirty')} />
+            <StatCard title="Reference Differences" value={stats.driftCount} icon={GitCompareArrows} tone={stats.driftCount ? 'rose' : 'emerald'} summary={statSummaries.drift} help={conceptHelp('drift')} onClick={() => setInsightDrawer('drift')} />
           </section>
 
           <section>
@@ -1222,6 +1705,7 @@ export default function App() {
                   <h2 className="flex items-center gap-3 text-2xl font-black tracking-tight text-slate-100">
                     Workspace Map
                     <span className="rounded bg-slate-800 px-2 py-0.5 text-[10px] uppercase tracking-tighter text-slate-500">Local-first</span>
+                    <InfoPopover {...glossaryHelp} />
                   </h2>
                   <p className="mt-1 text-sm italic text-slate-500">Factual scanner output from {workspaceRootLabel}.</p>
                 </div>
@@ -1231,12 +1715,12 @@ export default function App() {
               {projects.length > 0 ? (
                 <div className="grid grid-cols-1 gap-6 md:grid-cols-2 2xl:grid-cols-3">
                   {projects.map((project) => (
-                    <ProjectCard
+                    <ProjectCardComponent
                       key={project.id}
                       project={project}
                       drift={driftMap[project.id] ?? []}
                       isReference={project.id === referenceProject?.id}
-                      onSelect={setSelectedProject}
+                      onSelect={openProjectDrawer}
                     />
                   ))}
                 </div>
@@ -1270,13 +1754,21 @@ export default function App() {
         onAddProject={handleAddManualProject}
       />
 
+      <SettingsModal
+        open={settingsOpen}
+        projects={projects}
+        referenceProjectId={referenceProject?.id ?? ''}
+        onReferenceProjectChange={setReferenceProjectId}
+        onClose={() => setSettingsOpen(false)}
+      />
+
       <AttentionDrawer
         open={attentionOpen}
         items={attentionItems}
         unseenIds={unseenAttentionIds}
         onClose={closeAttention}
         onSelectProject={(project) => {
-          setSelectedProject(project);
+          openProjectDrawer(project);
           closeAttention();
         }}
       />
@@ -1285,11 +1777,11 @@ export default function App() {
         open={insightDrawer === 'risks'}
         title="Risk Findings"
         subtitle="Local hygiene findings grouped by project."
-        emptyLabel="No risk findings detected."
+        emptyLabel={`No hygiene findings from ${SCANNER_CHECK_SCOPE}.`}
         items={riskItems}
         onClose={() => setInsightDrawer(null)}
         onSelectProject={(project) => {
-          setSelectedProject(project);
+          openProjectDrawer(project);
           setInsightDrawer(null);
         }}
       />
@@ -1302,20 +1794,20 @@ export default function App() {
         items={dirtyItems}
         onClose={() => setInsightDrawer(null)}
         onSelectProject={(project) => {
-          setSelectedProject(project);
+          openProjectDrawer(project);
           setInsightDrawer(null);
         }}
       />
 
       <InsightDrawer
         open={insightDrawer === 'drift'}
-        title="Reference Drift"
+        title="Reference Differences"
         subtitle={`Compared against ${referenceProject?.name ?? 'the current reference'}.`}
-        emptyLabel="No reference drift detected."
+        emptyLabel="No reference differences detected."
         items={driftItems}
         onClose={() => setInsightDrawer(null)}
         onSelectProject={(project) => {
-          setSelectedProject(project);
+          openProjectDrawer(project);
           setInsightDrawer(null);
         }}
       />
@@ -1323,10 +1815,11 @@ export default function App() {
       {selectedProject && (
         <ProjectDrawer
           project={selectedProject}
+          open={projectDrawerOpen}
           drift={driftMap[selectedProject.id] ?? []}
           referenceProject={referenceProject}
           isReference={selectedProject?.id === referenceProject?.id}
-          onClose={() => setSelectedProject(null)}
+          onClose={closeProjectDrawer}
         />
       )}
 
