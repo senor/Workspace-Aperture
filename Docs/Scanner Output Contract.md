@@ -2,6 +2,8 @@
 
 The scanner writes the first stable Aperture data contract. The dashboard and future read-only MCP bridge should consume this shape instead of inventing separate project models.
 
+The app derives its three product lenses from this contract: Projects, Workspace, and Brief. Fields such as `risks`, `aiReadiness`, `runtimeStatus`, `launchProfile`, and reference comparisons remain factual inputs; the dashboard decides how to group them into lens-specific signals.
+
 ## Top-Level Shape
 
 ```json

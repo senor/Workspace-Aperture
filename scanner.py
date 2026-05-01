@@ -174,7 +174,7 @@ def run_command(path: Path, command: list[str]) -> tuple[int, str]:
             text=True,
             timeout=5,
         )
-        return result.returncode, result.stdout.strip()
+        return result.returncode, result.stdout.rstrip("\n")
     except (OSError, subprocess.SubprocessError):
         return 1, ""
 
@@ -242,9 +242,12 @@ def parse_port_from_lsof_name(name: str) -> Optional[int]:
         return None
     port_text = endpoint.rsplit(":", 1)[-1]
     try:
-        return int(port_text)
+        port = int(port_text)
     except ValueError:
         return None
+    if port < 1 or port > 65535:
+        return None
+    return port
 
 
 def cwd_for_pid(pid: str) -> Optional[Path]:

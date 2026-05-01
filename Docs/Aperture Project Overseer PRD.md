@@ -25,11 +25,11 @@ Theme choices should keep Aperture calm and operational. Color should clarify st
 - **Agentic isolation**: coding agents start from the currently opened repo and miss useful workspace-level patterns.
 - **Invisible local risk**: stale projects, dirty worktrees, env files, missing docs, and absent scripts hide until they become expensive.
 
-## V1 Feature Pillars
+## V1 Lenses
 
-### 1. Workspace Map
+### 1. Projects
 
-Aperture should inventory local projects and show factual project state:
+Aperture should inventory local projects and make each project inspectable through focused project lenses:
 
 - Detected stack and frameworks.
 - Package manager and language/runtime hints.
@@ -37,21 +37,35 @@ Aperture should inventory local projects and show factual project state:
 - Available scripts such as test, lint, build, and dev.
 - Documentation and setup files.
 - CI and environment-file signals.
+- Project-level signals, reference differences, and copyable handoff context.
 
-### 2. Today's Attention
+### 2. Workspace
 
-Aperture should prioritize what is worth noticing now:
+Aperture should provide one overall lens for the local workspace:
+
+- Mapped project count and discovery state.
+- Current scan source and scanner schema.
+- Selected reference project.
+- Average setup coverage.
+- Total open signal count across projects.
+- Local configuration such as reference selection and project lifecycle state.
+
+### 3. Brief
+
+Aperture should turn factual signals into a concise action layer:
 
 - Recently changed projects.
-- Stale projects that may need review.
 - Dirty worktrees.
 - Missing setup or agent context files.
 - Risk radar findings.
 - New drift from the reference project.
+- Copyable workspace handoff text for coding agents.
 
-This view should be factual and explainable, not a vague alarm feed.
+This view should be factual and explainable, not a vague alarm feed. Setup readiness, risk, dirty worktrees, launch hygiene, skipped checks, and reference drift are signal types inside the three lenses, not standalone product destinations.
 
-### 3. Reference Project Drift
+## Supporting Signal Types
+
+### Reference Differences
 
 The user should be able to mark one project as a reference project. Aperture should compare other projects against that reference and surface drift such as:
 
@@ -64,7 +78,7 @@ The user should be able to mark one project as a reference project. Aperture sho
 
 V1 drift is advisory. The product should support triage language such as intentional, ignored, unresolved, or recommended, but should not auto-change code.
 
-### 4. AI-Readiness Checklist
+### Setup Signals
 
 Aperture should show whether a project is legible to an AI coding agent:
 
@@ -76,7 +90,7 @@ Aperture should show whether a project is legible to an AI coding agent:
 
 The checklist should make missing context obvious before an agent starts work.
 
-### 5. Agent Brief Export
+### Agent Brief Export
 
 For any project, Aperture should generate a compact brief containing:
 
@@ -84,16 +98,16 @@ For any project, Aperture should generate a compact brief containing:
 - Detected stack and package manager.
 - Useful commands.
 - Recent activity and Git state.
-- AI-readiness status.
-- Risk radar findings.
-- Relevant drift from the reference project.
+- Setup signal status.
+- Hygiene findings.
+- Relevant reference differences.
 - Suggested files for an agent to inspect first.
 
 The brief should be copyable/exportable in V1 and exposed through MCP later.
 
-## Risk Radar
+## Hygiene Signals
 
-Aperture should not try to replace Snyk, SonarQube, Trivy, or full SAST tools. V1 risk radar should focus on local developer hygiene:
+Aperture should not try to replace Snyk, SonarQube, Trivy, or full SAST tools. V1 hygiene signals should focus on local developer hygiene:
 
 - `.env` exists but is not ignored.
 - `.env.example` is missing when env files exist.
@@ -101,7 +115,7 @@ Aperture should not try to replace Snyk, SonarQube, Trivy, or full SAST tools. V
 - CI is missing from projects that appear production-like.
 - Test or lint scripts are absent.
 
-Risk items must be explainable and traceable to files or observable metadata.
+Hygiene items must be explainable and traceable to files or observable metadata.
 
 ## Deferred Features
 

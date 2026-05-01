@@ -35,19 +35,19 @@ Aperture sits at the intersection of local workspace observability, lightweight 
 | Data privacy | SaaS or cloud sync | Local-first by default |
 | Scope | Single repo or enterprise catalog | Workspace-wide local project map |
 | Agent support | Manual prompt context | Agent briefs and read-only MCP facts |
-| Security posture | Full vulnerability scanning | Local hygiene and risk radar |
-| Governance | Team process and tickets | Reference-project drift for solo builders |
+| Security posture | Full vulnerability scanning | Local hygiene signals |
+| Governance | Team process and tickets | Reference-project differences for solo builders |
 | Complexity | Heavy setup or one-off CLI | Lightweight local observability |
 
 ## Product Edge
 
 Aperture should become the local workspace observability layer for agentic builders. Its strongest product wedge is the combination of:
 
-- Factual workspace inventory.
-- Today's Attention across all projects.
-- Reference Project Drift.
-- AI-Readiness Checklist.
-- Agent Brief Export.
+- Projects, Workspace, and Brief lenses.
+- One actionable cross-project Brief queue.
+- Advisory reference differences.
+- Setup and hygiene signals.
+- Agent brief export.
 - Read-only MCP bridge.
 
 In short: Aperture is not Jira, not Snyk, not Backstage, and not a generic dashboard. It is a living map of a developer's local code workshop.

@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "scan": "python3 scanner.py --root . --output public/projects.json",
     "build": "vite build",
     "preview": "vite preview"
   },

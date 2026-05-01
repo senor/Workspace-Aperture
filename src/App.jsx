@@ -3,9 +3,10 @@ import {
   Activity,
   AlertTriangle,
   CheckCircle2,
+  ChevronLeft,
   ChevronRight,
   CircleHelp,
-  Clock,
+  Copy,
   Cpu,
   Dna,
   ExternalLink,
@@ -15,6 +16,7 @@ import {
   GitBranch,
   Info,
   LayoutDashboard,
+  Map,
   Moon,
   MoreHorizontal,
   Palette,
@@ -153,6 +155,7 @@ const MANUAL_PROJECTS_STORAGE_KEY = 'aperture-manual-projects';
 const PROJECT_STATES_STORAGE_KEY = 'aperture-project-states';
 const SCANNER_CHECK_SCOPE = 'README, scripts, env, CI, and stack-aware launch checks';
 const TRACKED_PROJECT_STATES = new Set(['tracked', 'reference']);
+const RUNTIME_STATUS_FRESH_MS = 1000 * 60 * 5;
 const PROJECT_STATE_LABELS = {
   candidate: 'Candidate',
   tracked: 'Tracked',
@@ -163,12 +166,91 @@ const PROJECT_STATE_LABELS = {
 };
 
 const APERTURE_THEMES = [
-  { id: 'dark', label: 'Dark', swatch: '#020617', icon: Moon },
-  { id: 'light', label: 'Light', swatch: '#eef2f7', icon: Sun },
-  { id: 'signal', label: 'Signal Desk', swatch: '#22d3ee', icon: Activity },
-  { id: 'paper', label: 'Paper Trail', swatch: '#9a5b22', icon: FileJson },
-  { id: 'terminal', label: 'Terminal Glow', swatch: '#34d399', icon: Terminal },
+  {
+    id: 'base',
+    label: 'Base Map',
+    description: 'Warm graphite operations map with signal-orange marks.',
+    swatch: '#1a1917',
+    icon: Moon,
+    mode: 'dark',
+    shape: 'orbit',
+    radius: 'soft',
+    density: 'balanced',
+    iconStroke: 2,
+  },
+  {
+    id: 'daylight',
+    label: 'Daylight',
+    description: 'Bone and wash surfaces for long planning passes.',
+    swatch: '#e8e4dc',
+    icon: Sun,
+    mode: 'light',
+    shape: 'sun',
+    radius: 'soft',
+    density: 'balanced',
+    iconStroke: 2,
+  },
+  {
+    id: 'signal',
+    label: 'Signal Desk',
+    description: 'Blueprint console light for active operations.',
+    swatch: '#5ac8fa',
+    icon: Activity,
+    mode: 'dark',
+    shape: 'wave',
+    radius: 'soft',
+    density: 'balanced',
+    iconStroke: 2.1,
+  },
+  {
+    id: 'atlas',
+    label: 'Atlas Room',
+    description: 'Cool drafting table with hiroshi-blue surfaces and annotation marks.',
+    swatch: '#d5ecf5',
+    icon: Map,
+    mode: 'light',
+    shape: 'grid',
+    radius: 'flat',
+    density: 'compact',
+    iconStroke: 1.8,
+  },
+  {
+    id: 'vector',
+    label: 'Vector Scope',
+    description: 'Black-field vector display with pale phosphor lines.',
+    swatch: '#d8ffd8',
+    icon: Radio,
+    mode: 'dark',
+    shape: 'diamond',
+    radius: 'flat',
+    density: 'compact',
+    iconStroke: 1.7,
+  },
+  {
+    id: 'pocket',
+    label: 'Pocket Terminal',
+    description: 'Portable phosphor monitor with tight monospace controls.',
+    swatch: '#30ff60',
+    icon: Terminal,
+    mode: 'dark',
+    shape: 'terminal',
+    radius: 'flat',
+    density: 'compact',
+    iconStroke: 1.9,
+  },
 ];
+
+const APERTURE_THEME_ALIASES = {
+  dark: 'base',
+  light: 'daylight',
+  paper: 'atlas',
+  terminal: 'pocket',
+};
+
+const normalizeThemeId = (themeId) => {
+  const normalized = APERTURE_THEME_ALIASES[themeId] ?? themeId;
+  return APERTURE_THEMES.some((option) => option.id === normalized) ? normalized : 'base';
+};
 
 const highestRisk = (project) => {
   const risks = project.risks ?? [];
@@ -296,25 +378,25 @@ const conceptHelp = (type, { project, drift = [], isReference = false } = {}) =>
       body: 'The baseline project used for advisory comparisons. Differences are facts, not failures.',
     },
   };
-  return help[type] ?? { title: 'Scanner evidence', body: 'A factual observation from local scanner output.' };
+  return help[type] ?? { title: 'Scan evidence', body: 'A factual observation from the latest workspace scan.' };
 };
 
 const drawerTabHelp = {
   overview: {
     title: 'Overview',
-    body: 'Use this for the fastest read on project health: launch profile, skipped checks, setup readiness, and risks.',
+    body: 'Use this for factual project identity, runtime, source, stack, package, and commands.',
   },
-  source: {
-    title: 'Source',
-    body: 'Use this to inspect read-only Git state: branch, local changes, and recent commit history from the scanner.',
+  signals: {
+    title: 'Signals',
+    body: 'Use this to inspect setup gaps, launch findings, skipped checks, hygiene findings, and dirty worktree state.',
   },
   drift: {
     title: 'Drift',
     body: 'Use this to compare the project against the selected reference. Differences are advisory facts, not automatic failures.',
   },
   brief: {
-    title: 'Brief',
-    body: 'Use this when handing the project to an AI coding agent or returning later yourself. It compresses scanner facts into the minimum useful orientation.',
+    title: 'Project brief',
+    body: 'Project-specific handoff text for an AI coding agent or for returning later yourself.',
   },
 };
 
@@ -464,32 +546,57 @@ const isRecentlyChanged = (project) => {
   return Date.now() - date.getTime() < 1000 * 60 * 60 * 24 * 7;
 };
 
-const createAttentionItems = (projects, driftMap = {}) => {
-  const items = [];
-  projects.forEach((project) => {
-    if (project.git?.dirty) {
-      items.push({ id: `${project.id}-dirty`, project, severity: 'medium', title: 'Dirty worktree', detail: `${project.name} has uncommitted local changes.` });
-    }
-    (project.risks ?? []).forEach((risk) => {
-      items.push({ id: `${project.id}-${risk.id}`, project, severity: risk.severity, title: `${riskCategory(risk)}: ${risk.title}`, detail: risk.detail });
-    });
-    if ((project.aiReadiness?.score ?? 0) < 60) {
-      items.push({ id: `${project.id}-agent-readiness`, project, severity: 'medium', title: 'Agent readiness is low', detail: `${project.name} is missing context an AI agent would need.` });
-    }
-    (driftMap[project.id] ?? []).forEach((drift) => {
-      items.push({
-        id: `${project.id}-drift-${drift.id}`,
-        project,
-        severity: drift.severity,
-        title: `${drift.category} reference difference`,
-        detail: drift.detail,
-      });
-    });
-  });
-  return items
-    .sort((a, b) => (riskSeverityRank[b.severity] ?? 0) - (riskSeverityRank[a.severity] ?? 0))
-    .slice(0, 6);
+const signalSort = (a, b) => {
+  const severityDelta = (riskSeverityRank[b.severity] ?? 0) - (riskSeverityRank[a.severity] ?? 0);
+  if (severityDelta) return severityDelta;
+  const order = { risk: 0, setup: 1, dirty: 2, drift: 3 };
+  return (order[a.kind] ?? 9) - (order[b.kind] ?? 9);
 };
+
+const createBriefSignalItems = (projects, driftMap = {}) => projects.flatMap((project) => {
+  const setupItems = readinessSummary(project.aiReadiness).failed.map((check) => ({
+    id: `${project.id}-setup-${check.id}`,
+    project,
+    kind: 'setup',
+    severity: 'medium',
+    title: check.label,
+    detail: check.evidence?.length ? `Evidence: ${check.evidence.join(', ')}` : 'Missing from latest workspace scan.',
+    why: 'Shown because this setup signal is missing from the scanner checklist.',
+    tab: 'signals',
+  }));
+  const riskItems = (project.risks ?? []).map((risk, index) => ({
+    id: `${project.id}-risk-${risk.id}-${index}`,
+    project,
+    kind: 'risk',
+    severity: risk.severity,
+    title: `${riskCategory(risk)}: ${risk.title}`,
+    detail: risk.detail,
+    why: riskWhyShown(risk),
+    tab: 'signals',
+  }));
+  const dirtyItems = project.git?.dirty ? [{
+    id: `${project.id}-dirty`,
+    project,
+    kind: 'dirty',
+    severity: 'medium',
+    icon: 'dirty',
+    title: 'Dirty worktree',
+    detail: `${project.name} has uncommitted local changes.`,
+    why: 'Shown because Git reports uncommitted local changes in the latest scan.',
+    tab: 'signals',
+  }] : [];
+  const driftItems = (driftMap[project.id] ?? []).map((drift) => ({
+    id: `${project.id}-drift-${drift.id}`,
+    project,
+    kind: 'drift',
+    severity: drift.severity,
+    title: `${drift.category} reference difference`,
+    detail: drift.detail,
+    why: driftWhyShown(drift),
+    tab: 'drift',
+  }));
+  return [...riskItems, ...setupItems, ...dirtyItems, ...driftItems];
+}).sort(signalSort);
 
 const splitList = (value) => value
   .split(',')
@@ -509,15 +616,6 @@ const parseScripts = (value) => Object.fromEntries(
     .filter(([name]) => Boolean(name))
     .sort(([a], [b]) => a.localeCompare(b)),
 );
-
-const readSeenAttentionIds = () => {
-  try {
-    const saved = JSON.parse(localStorage.getItem('aperture-seen-attention') ?? '[]');
-    return Array.isArray(saved) ? saved.filter((item) => typeof item === 'string') : [];
-  } catch {
-    return [];
-  }
-};
 
 const readManualProjects = () => {
   try {
@@ -677,11 +775,11 @@ const browserProjectFromHandle = async (directoryHandle, pathParts = []) => {
       state: 'unknown',
       checkedAt: new Date().toISOString(),
       ports: [],
-      detail: 'Browser folder selection cannot inspect local listening ports. Run scanner.py for runtime status.',
+      detail: 'Browser folder selection cannot inspect local app status. Refresh with a full workspace scan to detect running local apps.',
     },
     launchProfile: profile,
     skippedChecks: [
-      { id: 'browser_limited_scan', title: 'Deep file checks skipped', reason: 'Browser folder selection can identify project candidates, but the Python scanner is still needed for full local evidence.' },
+      { id: 'browser_limited_scan', title: 'Deep file checks skipped', reason: 'Browser folder selection can identify project candidates, but a full workspace scan is still needed for local runtime, Git, and hygiene evidence.' },
       ...(profile.payments === 'none' ? [{ id: 'payment_bypass', title: 'Payment bypass checks skipped', reason: 'No payment provider was detected.' }] : []),
     ],
     aiReadiness: {
@@ -814,11 +912,11 @@ const browserProjectsFromFileList = async (fileList) => {
         state: 'unknown',
         checkedAt: new Date().toISOString(),
         ports: [],
-        detail: 'Browser folder selection cannot inspect local listening ports. Run scanner.py for runtime status.',
+        detail: 'Browser folder selection cannot inspect local app status. Refresh with a full workspace scan to detect running local apps.',
       },
       launchProfile: profile,
       skippedChecks: [
-        { id: 'browser_limited_scan', title: 'Deep file checks skipped', reason: 'Browser folder selection can identify project candidates, but the Python scanner is still needed for full local evidence.' },
+        { id: 'browser_limited_scan', title: 'Deep file checks skipped', reason: 'Browser folder selection can identify project candidates, but a full workspace scan is still needed for local runtime, Git, and hygiene evidence.' },
         ...(profile.payments === 'none' ? [{ id: 'payment_bypass', title: 'Payment bypass checks skipped', reason: 'No payment provider was detected.' }] : []),
       ],
       aiReadiness: {
@@ -872,7 +970,32 @@ const launchProfileRows = (profile = {}) => [
   ['AI APIs', profile.aiApis?.length ? profile.aiApis.join(', ') : 'none'],
 ];
 
-const primaryRuntimePort = (runtimeStatus) => runtimeStatus?.ports?.[0] ?? null;
+const isUsableRuntimePort = (port) => {
+  const value = Number(port?.port);
+  return Number.isInteger(value) && value > 0 && value <= 65535;
+};
+
+const normalizeRuntimeStatus = (runtimeStatus) => {
+  if (!runtimeStatus?.state) return runtimeStatus;
+  const ports = (runtimeStatus.ports ?? []).filter(isUsableRuntimePort);
+  if (runtimeStatus.state === 'running') {
+    const checkedAt = runtimeStatus.checkedAt ? new Date(runtimeStatus.checkedAt).getTime() : NaN;
+    const isFresh = Number.isFinite(checkedAt) && Date.now() - checkedAt <= RUNTIME_STATUS_FRESH_MS;
+    if (!ports.length || !isFresh) {
+      return {
+        ...runtimeStatus,
+        state: 'unknown',
+        ports: [],
+        detail: isFresh
+          ? 'The last scan reported a running app, but the localhost evidence was invalid. Refresh the workspace scan to check again.'
+          : 'Runtime evidence is stale. Refresh the workspace scan before opening a localhost link.',
+      };
+    }
+  }
+  return { ...runtimeStatus, ports };
+};
+
+const primaryRuntimePort = (runtimeStatus) => normalizeRuntimeStatus(runtimeStatus)?.ports?.[0] ?? null;
 
 const runtimePortLabel = (port) => {
   if (!port) return 'localhost';
@@ -886,63 +1009,89 @@ const runtimePortLabel = (port) => {
   return port.port ? `localhost:${port.port}` : 'localhost';
 };
 
+const runtimePortUrl = (port) => {
+  if (!isUsableRuntimePort(port)) return '';
+  if (port.url) {
+    try {
+      return new URL(port.url).toString();
+    } catch {
+      return '';
+    }
+  }
+  return `http://localhost:${port.port}`;
+};
+
 const runtimeStatusLabel = (runtimeStatus) => {
-  const primary = primaryRuntimePort(runtimeStatus);
-  if (!runtimeStatus?.state) return 'Runtime unknown';
-  if (runtimeStatus.state === 'running' && primary) return `Running on ${runtimePortLabel(primary)}`;
-  if (runtimeStatus.state === 'unknown') return 'Runtime unknown';
+  const normalized = normalizeRuntimeStatus(runtimeStatus);
+  const primary = primaryRuntimePort(normalized);
+  if (!normalized?.state) return 'Runtime unknown';
+  if (normalized.state === 'running' && primary) return `Running on ${runtimePortLabel(primary)}`;
+  if (normalized.state === 'unknown') return 'Runtime unknown';
   return 'Not running';
 };
 
 const runtimeStatusDetail = (runtimeStatus) => {
-  const primary = primaryRuntimePort(runtimeStatus);
-  if (!runtimeStatus?.state) {
-    return 'This scanner output was generated before runtime port detection existed. Run scanner.py again to refresh localhost status.';
+  const normalized = normalizeRuntimeStatus(runtimeStatus);
+  const primary = primaryRuntimePort(normalized);
+  if (!normalized?.state) {
+    return 'This project needs a fresh workspace scan before Aperture can show local runtime status.';
   }
-  if (runtimeStatus.state === 'running' && primary) {
+  if (normalized.state === 'running' && primary) {
     const process = [primary.command, primary.pid ? `pid ${primary.pid}` : null].filter(Boolean).join(' · ');
     return [
       process || null,
       primary.confidence ? `Confidence: ${primary.confidence}` : null,
-      runtimeStatus.detail,
+      normalized.detail,
     ].filter(Boolean).join('\n');
   }
-  if (runtimeStatus.state === 'unknown') {
-    return runtimeStatus.detail || 'Aperture could not inspect listening localhost ports during the last scan.';
+  if (normalized.state === 'unknown') {
+    return normalized.detail || 'Aperture could not inspect listening localhost ports during the last scan.';
   }
-  return runtimeStatus.detail || 'No matching listening localhost port was found during the last scan.';
+  return normalized.detail || 'No matching listening localhost port was found during the last scan.';
 };
 
 const RuntimeStatusIndicator = ({ runtimeStatus, align = 'left', compact = false }) => {
-  const primary = primaryRuntimePort(runtimeStatus);
-  const isRunning = runtimeStatus?.state === 'running' && primary;
-  const state = !runtimeStatus?.state || runtimeStatus.state === 'unknown' ? 'unknown' : isRunning ? 'running' : 'stopped';
+  const normalized = normalizeRuntimeStatus(runtimeStatus);
+  const primary = primaryRuntimePort(normalized);
+  const lastDetectedPrimary = (runtimeStatus?.ports ?? []).filter(isUsableRuntimePort)[0] ?? null;
+  const actionPort = primary ?? lastDetectedPrimary;
+  const actionUrl = runtimePortUrl(actionPort);
+  const isRunning = normalized?.state === 'running' && primary;
+  const state = !normalized?.state || normalized.state === 'unknown' ? 'unknown' : isRunning ? 'running' : 'stopped';
+  const actionLabel = isRunning
+    ? `Open ${runtimePortLabel(actionPort)}`
+    : actionUrl
+      ? `Open last detected ${runtimePortLabel(actionPort)}`
+      : runtimeStatusLabel(normalized);
   const stopCardClick = (event) => {
     event.stopPropagation();
   };
+  const TriggerTag = actionUrl ? 'a' : 'button';
 
   return (
     <span className={`runtime-status runtime-status--${state} ${compact ? 'runtime-status--compact' : ''}`} onClick={stopCardClick}>
-      <button
-        type="button"
+      <TriggerTag
+        {...(actionUrl ? { href: actionUrl, target: '_blank', rel: 'noreferrer' } : { type: 'button' })}
         className="runtime-status__trigger"
-        aria-label={runtimeStatusLabel(runtimeStatus)}
+        aria-label={actionLabel}
+        onClick={stopCardClick}
       >
         <Radio size={compact ? 13 : 15} />
-        {!compact && <span>{runtimeStatusLabel(runtimeStatus)}</span>}
-      </button>
+        {!compact && <span>{runtimeStatusLabel(normalized)}</span>}
+      </TriggerTag>
       <span className={`runtime-status__panel ${align === 'right' ? 'runtime-status__panel--right' : ''}`}>
-        <strong>{runtimeStatusLabel(runtimeStatus)}</strong>
-        {isRunning ? (
+        <strong>{runtimeStatusLabel(normalized)}</strong>
+        {actionUrl ? (
           <>
-            <a href={primary.url} target="_blank" rel="noreferrer" className="runtime-status__link" onClick={stopCardClick}>
-              {primary.url}
+            <a href={actionUrl} target="_blank" rel="noreferrer" className="runtime-status__link" onClick={stopCardClick}>
+              {isRunning ? actionUrl : `Open last detected ${runtimePortLabel(actionPort)}`}
               <ExternalLink size={13} />
             </a>
-            <span>{createLineBreaks(runtimeStatusDetail(runtimeStatus))}</span>
+            <span>{createLineBreaks(runtimeStatusDetail(normalized))}</span>
+            {!isRunning && <em className="runtime-status__hint">If this does not load, refresh the workspace scan.</em>}
           </>
         ) : (
-          <span>{createLineBreaks(runtimeStatusDetail(runtimeStatus))}</span>
+          <span>{createLineBreaks(runtimeStatusDetail(normalized))}</span>
         )}
       </span>
     </span>
@@ -1037,7 +1186,7 @@ const createManualProject = (form) => {
       state: 'unknown',
       checkedAt: new Date().toISOString(),
       ports: [],
-      detail: 'Manual entries do not include local process evidence. Run scanner.py for runtime status.',
+      detail: 'Manual entries do not include local runtime evidence. Refresh with a full workspace scan to detect running local apps.',
     },
     launchProfile: {
       framework: form.frameworks.toLowerCase().includes('next') ? 'next' : form.tools.toLowerCase().includes('vite') ? 'vite' : form.frameworks.toLowerCase().includes('react') ? 'react' : 'unknown',
@@ -1092,10 +1241,10 @@ const createLineBreaks = (text) => String(text)
     </React.Fragment>
   ));
 
-const InfoPopover = ({ title, body, align = 'left', kind = 'question' }) => {
+const InfoPopover = ({ title, body, align = 'left', kind = 'question', stopClick = true }) => {
   const Icon = kind === 'info' ? Info : CircleHelp;
   return (
-  <span className={`info-popover info-popover--${kind}`} onClick={(event) => event.stopPropagation()}>
+  <span className={`info-popover info-popover--${kind}`} onClick={stopClick ? (event) => event.stopPropagation() : undefined}>
     <span
       className="info-popover__trigger"
       tabIndex={0}
@@ -1146,75 +1295,114 @@ const statBreakdown = (projects, driftMap) => {
   };
 };
 
-const StatCard = ({ title, value, icon: Icon, tone = 'indigo', onClick, summary, help }) => {
-  const toneClass = tone === 'rose' ? 'bg-rose-500/10 text-rose-400' : tone === 'emerald' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-indigo-500/10 text-indigo-400';
-  const handleKeyDown = (event) => {
-    if (!onClick || event.target !== event.currentTarget) return;
-    if (event.key === 'Enter' || event.key === ' ') {
-      event.preventDefault();
-      onClick();
-    }
-  };
-  return (
-    <div
-      onClick={onClick}
-      onKeyDown={handleKeyDown}
-      role={onClick ? 'button' : undefined}
-      tabIndex={onClick ? 0 : undefined}
-      className={`rounded-xl border border-slate-800 bg-slate-900/50 p-4 text-left ${onClick ? 'stat-card--action' : ''}`}
-    >
-      <div className="mb-3 flex items-start justify-between">
-        <div className={`rounded-lg p-2 ${toneClass}`}>
-          <Icon size={18} />
-        </div>
-        <div className="flex items-center gap-2">
-          {help && <InfoPopover {...help} align="right" />}
-          {onClick && <ChevronRight size={18} className="text-slate-500" />}
-        </div>
-      </div>
-      <div className="text-2xl font-bold text-slate-100">{value}</div>
-      <div className="mt-1 text-xs font-semibold uppercase tracking-wider text-slate-500">{title}</div>
-      {summary && <div className="mt-2 text-xs font-medium leading-snug text-slate-500">{summary}</div>}
-    </div>
-  );
+const setupReadinessHelp = (avgReadiness) => ({
+  title: 'Setup readiness',
+  body: `Average setup coverage across mapped projects: ${avgReadiness}%.\nThis looks for basics that make a project easier to pick up, such as README, scripts, env examples, CI, and handoff context.`,
+});
+
+const ThemePreviewShape = ({ shape }) => {
+  switch (shape) {
+    case 'sun':
+      return (
+        <>
+          <path d="M6 22 L26 22 M16 22 A6 6 0 0 0 16 10 A6 6 0 0 0 16 22 Z" fill="none" stroke="var(--art-accent)" strokeWidth="2" strokeLinecap="round" />
+          <circle cx="16" cy="14" r="2" fill="var(--art-bone)" />
+        </>
+      );
+    case 'wave':
+      return <path d="M4 16 L10 8 L18 24 L28 12" fill="none" stroke="var(--art-accent)" strokeWidth="2" strokeLinejoin="round" />;
+    case 'grid':
+      return (
+        <>
+          <path d="M8 8 H24 V24 H8 Z" fill="none" stroke="var(--art-accent)" strokeWidth="2" />
+          <path d="M8 16 H24 M16 8 V24" fill="none" stroke="var(--art-bone)" strokeWidth="1.5" />
+        </>
+      );
+    case 'diamond':
+      return (
+        <>
+          <path d="M16 6 L26 16 L16 26 L6 16 Z" fill="none" stroke="var(--art-accent)" strokeWidth="2" strokeLinejoin="round" />
+          <circle cx="16" cy="16" r="1.5" fill="var(--art-bone)" />
+        </>
+      );
+    case 'terminal':
+      return <path d="M8 12 L14 16 L8 20 M16 20 L24 20" fill="none" stroke="var(--art-accent)" strokeWidth="2" strokeLinejoin="round" />;
+    case 'orbit':
+    default:
+      return (
+        <>
+          <circle cx="16" cy="16" r="8" fill="none" stroke="var(--art-accent)" strokeWidth="2" />
+          <circle cx="16" cy="16" r="3" fill="none" stroke="var(--art-bone)" strokeWidth="2" />
+        </>
+      );
+  }
 };
 
 const ThemeSwitcher = ({ theme, onThemeChange }) => {
   const [open, setOpen] = useState(false);
-  const activeTheme = APERTURE_THEMES.find((option) => option.id === theme) ?? APERTURE_THEMES[0];
+  const pickerRef = useRef(null);
+  const activeTheme = APERTURE_THEMES.find((option) => option.id === normalizeThemeId(theme)) ?? APERTURE_THEMES[0];
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const handlePointerDown = (event) => {
+      if (pickerRef.current?.contains(event.target)) return;
+      setOpen(false);
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('touchstart', handlePointerDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('touchstart', handlePointerDown);
+    };
+  }, [open]);
 
   return (
-    <div className="theme-picker">
+    <div ref={pickerRef} className="theme-picker">
       <button
         type="button"
         className={`theme-picker__trigger ${open ? 'is-open' : ''}`}
         onClick={() => setOpen((value) => !value)}
         aria-expanded={open}
-        aria-label="Choose theme"
-        title="Choose theme"
+        aria-label="Choose vibe"
+        title="Choose vibe"
       >
-        <Palette size={18} />
-        <span className="theme-picker__swatch" style={{ '--theme-swatch': activeTheme.swatch }} />
+        <Palette className="theme-picker__trigger-icon" size={16} />
       </button>
 
       {open && (
         <div className="theme-picker__popover">
+          <div className="theme-picker__header">
+            <span>Vibes</span>
+          </div>
           {APERTURE_THEMES.map((option) => {
-            const Icon = option.icon;
             return (
             <button
               key={option.id}
               type="button"
-              className={`theme-picker__item ${theme === option.id ? 'is-active' : ''}`}
+              className={`theme-picker__item ${normalizeThemeId(theme) === option.id ? 'is-active' : ''}`}
               onClick={() => {
                 onThemeChange(option.id);
-                setOpen(false);
               }}
             >
-              <span className="theme-picker__item-swatch" style={{ '--theme-swatch': option.swatch }}>
-                <Icon size={13} />
+              <span
+                className="theme-picker__item-art"
+                style={{
+                  '--mock-bg': option.mode === 'light' ? '#f4f0e6' : '#222220',
+                  '--mock-bone': option.mode === 'light' ? '#2a2826' : '#c8c4b8',
+                  '--mock-accent': option.swatch,
+                }}
+              >
+                <span className="theme-picker__art-preview">
+                  <svg width="32" height="32" viewBox="0 0 32 32" aria-hidden="true">
+                    <ThemePreviewShape shape={option.shape} />
+                  </svg>
+                </span>
               </span>
-              {option.label}
+              <span className="theme-picker__item-copy">
+                <strong>{option.label}</strong>
+                <small>{option.description}</small>
+              </span>
             </button>
             );
           })}
@@ -1223,21 +1411,6 @@ const ThemeSwitcher = ({ theme, onThemeChange }) => {
     </div>
   );
 };
-
-const AttentionButton = ({ count, unseenCount, open, onClick }) => (
-  <button
-    type="button"
-    className={`attention-trigger ${open ? 'is-open' : ''}`}
-    onClick={onClick}
-    aria-label={`${count} attention item${count === 1 ? '' : 's'}`}
-    title="Today's Attention"
-  >
-    <Activity size={18} />
-    <span className="hidden text-xs font-black uppercase tracking-widest lg:inline">Attention</span>
-    <span className="attention-trigger__count">{count}</span>
-    {unseenCount > 0 && <span className="attention-trigger__dot" />}
-  </button>
-);
 
 const AddProjectButton = ({ open, onClick }) => (
   <button
@@ -1252,100 +1425,423 @@ const AddProjectButton = ({ open, onClick }) => (
   </button>
 );
 
-const AttentionDrawer = ({ open, items, unseenIds, onClose, onSelectProject }) => (
-  <>
-    <button className={`attention-drawer__scrim ${open ? 'is-open' : ''}`} type="button" aria-label="Close attention feed" onClick={onClose} aria-hidden={!open} tabIndex={open ? 0 : -1} />
-    <aside className={`attention-drawer ${open ? 'is-open' : ''}`} aria-hidden={!open}>
-      <div className="attention-drawer__header">
-        <div>
-          <div className="text-xs font-black uppercase tracking-[0.24em] text-indigo-300">Today's Attention</div>
-          <h2 className="mt-1 text-xl font-black tracking-tight text-slate-100">Scanner feed</h2>
-          <p className="mt-1 text-xs font-bold text-slate-500">Prioritized scanner facts, not automated fixes.</p>
-        </div>
-        <button type="button" className="attention-drawer__close" onClick={onClose} aria-label="Close attention feed">
-          <X size={18} />
-        </button>
-      </div>
-
-      <div className="attention-drawer__body custom-scrollbar">
-        {items.length > 0 ? items.map((item) => {
-          const isNew = unseenIds.has(item.id);
-          return (
-            <button
-              key={item.id}
-              onClick={() => onSelectProject(item.project)}
-              className={`attention-item ${severityStyles[item.severity] || severityStyles.low}`}
-            >
-              <div className="flex items-start gap-3">
-                <div className="relative mt-0.5">
-                  {item.severity === 'high' ? <ShieldAlert size={18} /> : <AlertTriangle size={18} />}
-                  {isNew && <span className="attention-item__new-dot" />}
-                </div>
-                <div>
-                  <div className="flex items-center gap-2 text-sm font-bold">
-                    {item.title}
-                    {isNew && <span className="attention-item__new-label">New</span>}
-                  </div>
-                  <div className="mt-1 text-xs opacity-80">{item.detail}</div>
-                  <div className="mt-2 flex items-center gap-1 text-[10px] font-black uppercase tracking-widest opacity-70">
-                    {item.project.name} <ChevronRight size={12} />
-                  </div>
-                </div>
-              </div>
-            </button>
-          );
-        }) : (
-          <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-6 text-center text-emerald-300">
-            <CheckCircle2 className="mx-auto mb-2" /> No attention items detected.
-          </div>
-        )}
-      </div>
-    </aside>
-  </>
+const SettingsButton = ({ open, onClick }) => (
+  <button
+    type="button"
+    className={`attention-trigger ${open ? 'is-open' : ''}`}
+    onClick={onClick}
+    aria-label="Settings"
+    title="Settings"
+  >
+    <Settings size={18} />
+  </button>
 );
 
-const InsightDrawer = ({ open, title, subtitle, emptyLabel, items, onClose, onSelectProject }) => (
-  <>
-    <button className={`attention-drawer__scrim ${open ? 'is-open' : ''}`} type="button" aria-label={`Close ${title}`} onClick={onClose} aria-hidden={!open} tabIndex={open ? 0 : -1} />
-    <aside className={`attention-drawer ${open ? 'is-open' : ''}`} aria-hidden={!open}>
-      <div className="attention-drawer__header">
-        <div>
-          <div className="text-xs font-black uppercase tracking-[0.24em] text-indigo-300">Workspace Signal</div>
-          <h2 className="mt-1 text-xl font-black tracking-tight text-slate-100">{title}</h2>
-          <p className="mt-1 text-xs font-bold text-slate-500">{subtitle}</p>
-        </div>
-        <button type="button" className="attention-drawer__close" onClick={onClose} aria-label={`Close ${title}`}>
-          <X size={18} />
-        </button>
-      </div>
+const groupedSetupGaps = (items) => Object.entries(items.reduce((groups, item) => ({
+  ...groups,
+  [item.title]: [...(groups[item.title] ?? []), item],
+}), {})).sort((a, b) => b[1].length - a[1].length);
 
-      <div className="attention-drawer__body custom-scrollbar">
-        {items.length > 0 ? items.map((item) => (
-          <button
-            key={item.id}
-            onClick={() => onSelectProject(item.project)}
-            className={`attention-item ${severityStyles[item.severity] || severityStyles.low}`}
-          >
-            <div className="flex items-start gap-3">
-              {item.icon === 'dirty' ? <GitBranch size={18} /> : item.severity === 'high' ? <ShieldAlert size={18} /> : <AlertTriangle size={18} />}
-              <div>
-                <div className="text-sm font-bold">{item.title}</div>
-                <div className="mt-1 text-xs opacity-80">{item.detail}</div>
-                <div className="mt-2 flex items-center gap-1 text-[10px] font-black uppercase tracking-widest opacity-70">
-                  {item.project.name} <ChevronRight size={12} />
-                </div>
-              </div>
-            </div>
+const tabForBriefItem = (item) => {
+  if (item.tab) return item.tab;
+  if (item.kind === 'dirty') return 'signals';
+  if (item.kind === 'drift') return 'drift';
+  return 'signals';
+};
+
+const BriefItemButton = ({ item, onSelectProject }) => (
+  <button
+    type="button"
+    className={`brief-item ${severityStyles[item.severity] || severityStyles.medium}`}
+    onClick={() => onSelectProject(item.project, tabForBriefItem(item))}
+  >
+    <span>
+      <strong>{item.title}</strong>
+      <small>{item.detail}</small>
+      {item.why && <small>{item.why}</small>}
+    </span>
+    <em>{item.project.name}</em>
+  </button>
+);
+
+const BriefMoment = ({ eyebrow, title, copy, icon: Icon, tone = 'info' }) => (
+  <article className={`brief-moment brief-moment--${tone}`}>
+    <div className="brief-moment__icon" aria-hidden="true">{Icon && <Icon size={20} />}</div>
+    <span>{eyebrow}</span>
+    <h3>{title}</h3>
+    <p>{copy}</p>
+  </article>
+);
+
+const BriefMetric = ({ icon: Icon, label, value, detail }) => (
+  <div className="brief-metric">
+    <Icon size={17} />
+    <span>{label}</span>
+    <strong>{value}</strong>
+    {detail && <small>{detail}</small>}
+  </div>
+);
+
+const BriefMetricButton = ({ icon: Icon, label, value, detail, onClick }) => (
+  <button type="button" className="brief-metric brief-metric--button" onClick={onClick}>
+    <Icon size={17} />
+    <span>{label}</span>
+    <strong>{value}</strong>
+    {detail && <small>{detail}</small>}
+  </button>
+);
+
+const CopyableHandoff = ({ text, label = 'handoff text' }) => {
+  const [copied, setCopied] = useState(false);
+  const copyText = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    } catch {
+      setCopied(false);
+    }
+  };
+
+  return (
+    <div className="copyable-handoff">
+      <button type="button" className="copyable-handoff__copy" onClick={copyText}>
+        <Copy size={14} />
+        {copied ? 'Copied' : `Copy ${label}`}
+      </button>
+      <pre>{text}</pre>
+    </div>
+  );
+};
+
+const WorkspaceDashboardCard = ({ eyebrow, title, summary, detail, icon: Icon, tone = 'info', help, onClick }) => {
+  const Element = onClick ? 'button' : 'article';
+  return (
+    <Element
+      type={onClick ? 'button' : undefined}
+      className={`workspace-card workspace-card--${tone} ${onClick ? 'workspace-card--button' : ''}`}
+      onClick={onClick}
+    >
+      <span className="workspace-card__icon" aria-hidden="true"><Icon size={34} /></span>
+      <span className="workspace-card__copy">
+        <span className="workspace-card__eyebrow">
+          {eyebrow}
+          {help && <InfoPopover {...help} align="right" stopClick={false} />}
+        </span>
+        <strong>{title}</strong>
+        <span>{summary}</span>
+      </span>
+      {detail && <small>{detail}</small>}
+      {onClick && <ChevronRight size={18} />}
+    </Element>
+  );
+};
+
+const SetupRequiredState = ({
+  eyebrow,
+  title,
+  detail,
+  hasKnownProjects,
+  onOpenSettings,
+  onShowScannerHelp,
+  onAddManualProject,
+}) => (
+  <section className="setup-required">
+    <div className="setup-required__marker">
+      <span />
+      <div className="section-kicker">{eyebrow}</div>
+    </div>
+    <div className="setup-required__body">
+      <FolderOpen size={42} />
+      <h2>{title}</h2>
+      <p>{detail}</p>
+      <div className="setup-required__actions">
+        {hasKnownProjects ? (
+          <button type="button" onClick={onOpenSettings} className="manual-submit justify-center">
+            <Settings size={16} /> Open Settings
           </button>
-        )) : (
-          <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-6 text-center text-emerald-300">
-            <CheckCircle2 className="mx-auto mb-2" /> {emptyLabel}
-          </div>
+        ) : (
+          <>
+            <button type="button" onClick={onShowScannerHelp} className="manual-submit justify-center">
+              <Terminal size={16} /> Show Scan Command
+            </button>
+            <button type="button" onClick={onAddManualProject} className="manual-submit justify-center">
+              <Save size={16} /> Add Manually
+            </button>
+          </>
         )}
       </div>
-    </aside>
-  </>
+    </div>
+  </section>
 );
+
+const WorkspaceView = ({
+  stats,
+  statSummaries,
+  workspaceRootLabel,
+  schemaVersion,
+  referenceProject,
+  hasKnownProjects,
+  onShowProjects,
+  onOpenBrief,
+  onOpenSettings,
+  onShowScannerHelp,
+  onAddManualProject,
+  glossaryHelp,
+}) => {
+  const openSignalCount = stats.signalCount ?? (stats.riskCount + stats.dirtyCount + stats.driftCount);
+  const readinessTone = stats.avgReadiness >= 80 ? 'success' : stats.avgReadiness >= 55 ? 'warning' : 'danger';
+  const scanSourceKind = workspaceRootLabel
+    ? workspaceRootLabel === 'Manual entries' ? 'Manual' : 'Local'
+    : 'None';
+  const schemaLabel = schemaVersion?.replace('aperture.scan.', '') ?? 'v1';
+  const workspaceLine = stats.totalProjects
+    ? 'Inventory, baseline, source, setup coverage, and scan provenance for this local workspace.'
+    : 'Create the local project map first, then track projects from scan evidence or manual entries.';
+  const signalSummary = [
+    `${stats.riskCount} risk`,
+    `${stats.dirtyCount} dirty`,
+    `${stats.driftCount} drift`,
+  ].join(' / ');
+
+  if (!stats.totalProjects) {
+    return (
+      <SetupRequiredState
+        eyebrow="Workspace"
+        title="No projects mapped yet"
+        detail={hasKnownProjects
+          ? 'Aperture found candidate projects, but none are currently tracked. Choose which projects belong in the workspace map.'
+          : 'Add at least one project before Workspace can show scan context, reference baseline, and setup coverage.'}
+        hasKnownProjects={hasKnownProjects}
+        onOpenSettings={onOpenSettings}
+        onShowScannerHelp={onShowScannerHelp}
+        onAddManualProject={onAddManualProject}
+      />
+    );
+  }
+
+  return (
+    <section className="workspace-overview">
+      <div className="workspace-overview__header">
+        <div>
+          <p>{workspaceLine}</p>
+        </div>
+        <div className="workspace-overview__score">
+          <span>{stats.totalProjects}</span>
+          <small>mapped projects</small>
+        </div>
+      </div>
+
+      <section className="workspace-card-grid" aria-label="Workspace snapshot">
+        <WorkspaceDashboardCard
+          eyebrow="Inventory"
+          title={statSummaries.projects}
+          summary="Tracked projects from the workspace map."
+          detail="Project map"
+          icon={FolderOpen}
+          tone="info"
+          help={{ title: 'Projects mapped', body: 'Projects currently shown from the latest workspace scan plus manual entries.' }}
+          onClick={onShowProjects}
+        />
+        <WorkspaceDashboardCard
+          eyebrow="Reference"
+          title={referenceProject?.name ?? 'No baseline'}
+          summary={referenceProject ? 'Comparison anchor for conventions and setup shape.' : 'Select a tracked project as the baseline.'}
+          detail="Baseline"
+          icon={Map}
+          tone={referenceProject ? 'info' : 'warning'}
+          help={{ title: 'Reference baseline', body: 'The baseline project used for advisory comparisons. Differences are facts, not failures.' }}
+          onClick={onShowProjects}
+        />
+        <WorkspaceDashboardCard
+          eyebrow="Source"
+          title={scanSourceKind}
+          summary={workspaceRootLabel || 'No scan source yet'}
+          detail={`Schema ${schemaLabel}`}
+          icon={Radio}
+          tone="success"
+          help={{ title: 'Scan source', body: `Workspace evidence boundary: ${workspaceRootLabel || 'No scan source yet'}.` }}
+        />
+        <WorkspaceDashboardCard
+          eyebrow="Readiness"
+          title={`${stats.avgReadiness}% coverage`}
+          summary={statSummaries.readiness}
+          detail="Setup checks"
+          icon={Cpu}
+          tone={readinessTone}
+          help={setupReadinessHelp(stats.avgReadiness)}
+          onClick={onShowProjects}
+        />
+        <WorkspaceDashboardCard
+          eyebrow="Workspace signals"
+          title={openSignalCount ? `${openSignalCount} open` : 'None open'}
+          summary={signalSummary}
+          detail="Brief queue"
+          icon={ShieldAlert}
+          tone={openSignalCount ? 'warning' : 'success'}
+          help={glossaryHelp}
+          onClick={() => onOpenBrief('priority')}
+        />
+      </section>
+    </section>
+  );
+};
+
+const BriefView = ({
+  projects,
+  signalItems,
+  focus,
+  onSelectProject,
+  onOpenFocus,
+  hasKnownProjects,
+  onOpenSettings,
+  onShowScannerHelp,
+  onAddManualProject,
+}) => {
+  const setupGapItems = signalItems.filter((item) => item.kind === 'setup');
+  const riskItems = signalItems.filter((item) => item.kind === 'risk');
+  const dirtyItems = signalItems.filter((item) => item.kind === 'dirty');
+  const driftItems = signalItems.filter((item) => item.kind === 'drift');
+  const setupGroups = groupedSetupGaps(setupGapItems);
+  const highRiskItems = riskItems.filter((item) => ['critical', 'high'].includes(item.severity));
+  const priorityItems = signalItems.slice(0, 10);
+  const activeFocus = ['priority', 'setup', 'risk', 'git', 'drift'].includes(focus) ? focus : 'priority';
+  const filteredItems = activeFocus === 'priority'
+    ? priorityItems
+    : activeFocus === 'setup'
+      ? setupGapItems
+      : activeFocus === 'risk'
+        ? riskItems
+        : activeFocus === 'git'
+          ? dirtyItems
+          : driftItems;
+  const filters = [
+    { id: 'priority', label: 'Priority', icon: AlertTriangle, count: priorityItems.length },
+    { id: 'setup', label: 'Setup', icon: Cpu, count: setupGapItems.length },
+    { id: 'risk', label: 'Risk', icon: ShieldAlert, count: riskItems.length },
+    { id: 'git', label: 'Git', icon: GitBranch, count: dirtyItems.length },
+    { id: 'drift', label: 'Drift', icon: GitCompareArrows, count: driftItems.length },
+  ];
+  const agentBriefLines = [
+    `Start with ${priorityItems[0]?.project.name ?? 'the cleanest mapped project'}: ${priorityItems[0]?.title ?? 'no priority blockers surfaced'}.`,
+    `${highRiskItems.length} high-priority finding${highRiskItems.length === 1 ? '' : 's'}; ${riskItems.length} total risk signal${riskItems.length === 1 ? '' : 's'} are not equally weighted.`,
+    setupGroups[0] ? `${setupGroups[0][1].length} project${setupGroups[0][1].length === 1 ? '' : 's'} share "${setupGroups[0][0]}".` : 'No repeated setup gap is blocking handoff.',
+    dirtyItems.length ? `Review Git state for ${dirtyItems[0].project.name} first.` : 'No dirty worktrees need review.',
+    driftItems.length ? 'Use reference differences as advisory context, not a launch blocker.' : 'No reference differences surfaced.',
+  ];
+  const agentBriefText = [
+    'Workspace handoff',
+    '',
+    ...agentBriefLines,
+  ].join('\n');
+  const riskLead = riskItems[0];
+  const dirtyLead = dirtyItems[0];
+  const driftLead = driftItems[0];
+
+  if (!projects.length) {
+    return (
+      <SetupRequiredState
+        eyebrow="Workspace Brief"
+        title="No brief available yet"
+        detail={hasKnownProjects
+          ? 'Track at least one candidate project before Aperture can rank next moves.'
+          : 'Add a project first. Brief is the action layer, so it needs mapped project evidence before it can prioritize anything.'}
+        hasKnownProjects={hasKnownProjects}
+        onOpenSettings={onOpenSettings}
+        onShowScannerHelp={onShowScannerHelp}
+        onAddManualProject={onAddManualProject}
+      />
+    );
+  }
+
+  return (
+    <section className="workspace-brief">
+      <div className="workspace-brief__hero">
+        <div className="workspace-brief__copy">
+          <div className="workspace-brief__marker">
+            <span />
+            <div className="section-kicker">Brief</div>
+          </div>
+          <h2>What should happen next</h2>
+          <p>Actionable setup, risk, Git, and reference signals translated into one cross-project queue.</p>
+        </div>
+        <div className="workspace-brief__score">
+          <span>{signalItems.length}</span>
+          <small>open signals</small>
+        </div>
+      </div>
+
+      <section className="brief-metrics" aria-label="Brief snapshot">
+        <BriefMetric icon={FolderOpen} label="Mapped" value={projects.length} detail="projects" />
+        <BriefMetricButton icon={Cpu} label="Setup" value={setupGapItems.length} detail="gaps" onClick={() => onOpenFocus('setup')} />
+        <BriefMetricButton icon={ShieldAlert} label="Risk" value={highRiskItems.length} detail={`${riskItems.length} total`} onClick={() => onOpenFocus('risk')} />
+        <BriefMetricButton icon={GitBranch} label="Git" value={dirtyItems.length} detail="dirty" onClick={() => onOpenFocus('git')} />
+        <BriefMetricButton icon={GitCompareArrows} label="Drift" value={driftItems.length} detail="diffs" onClick={() => onOpenFocus('drift')} />
+      </section>
+
+      <section className="brief-moments" aria-label="Brief highlights">
+        <BriefMoment
+          eyebrow="First move"
+          title={setupGroups[0]?.[0] || 'Workspace is structurally ready'}
+          copy={setupGroups[0] ? `${setupGroups[0][1].length} project${setupGroups[0][1].length === 1 ? '' : 's'} need this before handoff feels reliable.` : 'No recurring setup gap is blocking agent handoff across mapped projects.'}
+          icon={Cpu}
+          tone="info"
+        />
+        <BriefMoment
+          eyebrow="Launch pressure"
+          title={riskLead?.title || 'No launch risk detected'}
+          copy={riskLead ? `${riskLead.project.name}: ${riskLead.detail}` : 'The current scan is not flagging missing CI, exposed env files, or similar launch hygiene issues.'}
+          icon={ShieldAlert}
+          tone={riskLead ? 'warning' : 'success'}
+        />
+        <BriefMoment
+          eyebrow="Project state"
+          title={dirtyLead?.title || driftLead?.title || 'No local drag'}
+          copy={dirtyLead ? dirtyLead.detail : driftLead ? `${driftLead.project.name}: ${driftLead.detail}` : 'Worktrees and reference markers are calm enough to keep moving.'}
+          icon={dirtyLead ? GitBranch : GitCompareArrows}
+          tone={dirtyLead || driftLead ? 'danger' : 'success'}
+        />
+      </section>
+
+      <section className="brief-panel brief-panel--queue">
+        <div className="brief-panel__heading">
+          <h3><AlertTriangle size={15} /> Action Queue</h3>
+          <span>{filteredItems.length}</span>
+        </div>
+        <div className="brief-filter-row" aria-label="Brief filters">
+          {filters.map((filter) => {
+            const Icon = filter.icon;
+            return (
+              <button
+                key={filter.id}
+                type="button"
+                className={`brief-filter ${activeFocus === filter.id ? 'is-active' : ''}`}
+                onClick={() => onOpenFocus(filter.id)}
+              >
+                <Icon size={14} />
+                <span>{filter.label}</span>
+                <em>{filter.count}</em>
+              </button>
+            );
+          })}
+        </div>
+        <div className="brief-queue-list">
+          {filteredItems.length ? filteredItems.map((item) => (
+            <BriefItemButton key={item.id} item={item} onSelectProject={onSelectProject} />
+          )) : <div className="brief-empty"><CheckCircle2 size={18} /> No signals in this filter.</div>}
+        </div>
+      </section>
+
+      <section className="brief-panel brief-panel--handoff">
+        <div className="brief-panel__heading">
+          <h3><FileJson size={15} /> Agent Handoff</h3>
+          <span>Summary</span>
+        </div>
+        <CopyableHandoff text={agentBriefText} label="handoff" />
+      </section>
+    </section>
+  );
+};
 
 const ApertureAnalyzer = () => (
   <div className="flex min-h-[520px] items-center justify-center">
@@ -1360,7 +1856,7 @@ const ApertureAnalyzer = () => (
       </div>
       <div className="text-xs font-black uppercase tracking-[0.4em] text-indigo-300">Analyzing</div>
       <h2 className="mt-3 text-2xl font-black tracking-tight text-slate-100">Finding your workspace signal</h2>
-      <p className="mt-2 max-w-sm text-sm text-slate-500">Checking for generated scanner data.</p>
+      <p className="mt-2 max-w-sm text-sm text-slate-500">Checking for workspace scan data.</p>
     </div>
   </div>
 );
@@ -1415,7 +1911,7 @@ const ManualProjectDrawer = ({ open, onClose, onAddProject }) => {
           <div>
             <div className="text-xs font-black uppercase tracking-[0.24em] text-indigo-300">Manual Project</div>
             <h2 className="mt-1 text-xl font-black tracking-tight text-slate-100">Add project</h2>
-            <p className="mt-1 text-xs font-bold text-slate-500">Saved in this browser and merged with scanner output.</p>
+            <p className="mt-1 text-xs font-bold text-slate-500">Saved in this browser and merged with workspace scan data.</p>
           </div>
           <button type="button" className="attention-drawer__close" onClick={onClose} aria-label="Close manual project form">
             <X size={18} />
@@ -1527,7 +2023,7 @@ const AddProjectDrawer = ({ open, workspaceRoot, onClose, onAddManualProject }) 
               </div>
               <div>
                 <h3>Rescan workspace</h3>
-                <p>Best for a new local project. Run the scanner again, then refresh Aperture so the generated project list is reloaded.</p>
+                <p>Best for a new local project. Refresh the workspace scan, then reload Aperture so the project list is updated.</p>
               </div>
               <div className="add-project-command">{scanCommand}</div>
               <button type="button" className="manual-submit" onClick={() => window.location.reload()}>
@@ -1574,19 +2070,19 @@ const EmptyState = ({ onAddManualProject, onShowScannerHelp }) => {
         <div className="text-xs font-black uppercase tracking-[0.35em] text-indigo-300">Aperture</div>
         <h1 className="mt-3 text-4xl font-black tracking-tight text-slate-100">Point Aperture at your projects</h1>
         <p className="mx-auto mt-3 max-w-xl text-sm text-slate-500">
-          Use the local scanner to map a folder without uploading a file snapshot into the browser.
+          Create a local workspace scan to map a folder without uploading a file snapshot into the browser.
         </p>
       </div>
 
       <div className="grid gap-4 lg:grid-cols-4">
-        <SetupCard icon={FolderOpen} title="Local folder scan" detail="Run scanner.py against a projects folder, then refresh the dashboard." className="lg:col-span-2">
+        <SetupCard icon={FolderOpen} title="Local folder scan" detail="Scan a projects folder, then refresh the dashboard." className="lg:col-span-2">
           <button type="button" onClick={onShowScannerHelp} className="manual-submit w-full justify-center">
-            <Terminal size={16} /> Show Scanner Command
+            <Terminal size={16} /> Show Scan Command
           </button>
-          <div className="mt-3 text-xs font-bold text-slate-500">A browser folder picker would read thousands of files as an upload-style snapshot, so Aperture uses the local scanner instead.</div>
+          <div className="mt-3 text-xs font-bold text-slate-500">A browser folder picker would read thousands of files as an upload-style snapshot, so Aperture creates a local workspace scan instead.</div>
         </SetupCard>
 
-        <SetupCard icon={Terminal} title="Run local scanner" detail="Use this when you want deeper Git, env, CI, and launch evidence." className="lg:col-span-2">
+        <SetupCard icon={Terminal} title="Run workspace scan" detail="Use this when you want deeper Git, env, CI, and launch evidence." className="lg:col-span-2">
           <label className="manual-field">
             <span>Projects root</span>
             <input value={scanRoot} onChange={(event) => setScanRoot(event.target.value)} placeholder="~/dev" />
@@ -1627,7 +2123,7 @@ const TechPill = ({ tech }) => (
 
 const StatusDot = ({ project }) => {
   if (project.git?.dirty) return <span className="h-2 w-2 rounded-full bg-amber-400" aria-label="Dirty worktree" />;
-  if (highestRisk(project)?.severity === 'high') return <span className="h-2 w-2 rounded-full bg-rose-500" aria-label="High severity scanner finding" />;
+  if (highestRisk(project)?.severity === 'high') return <span className="h-2 w-2 rounded-full bg-rose-500" aria-label="High severity workspace finding" />;
   if (isRecentlyChanged(project)) return <span className="h-2 w-2 rounded-full bg-indigo-500" aria-label="Recently changed" />;
   return <span className="h-2 w-2 rounded-full bg-emerald-500" aria-label={`No hygiene findings from ${SCANNER_CHECK_SCOPE}`} />;
 };
@@ -1657,7 +2153,7 @@ const driftMeaning = (drift) => {
 
 const driftWhyShown = (item) => `Shown because ${item.category.toLowerCase()} differs from the selected reference project. This is an advisory difference, not a failure.`;
 
-const riskWhyShown = (risk) => `Shown because scanner evidence matched ${riskCategory(risk).toLowerCase()}: ${risk.detail}`;
+const riskWhyShown = (risk) => `Shown because workspace evidence matched ${riskCategory(risk).toLowerCase()}: ${risk.detail}`;
 
 const suggestedFilesForProject = (project) => {
   const files = [
@@ -1730,9 +2226,16 @@ const ExperimentalProjectCard = ({ project, onSelect, drift = [], isReference })
       detail: project.git?.dirty ? 'Uncommitted local changes' : project.git?.isRepo ? 'No uncommitted changes detected' : 'Not detected as Git',
       help: conceptHelp('dirty', { project, drift, isReference }),
     },
+    {
+      key: 'setup',
+      active: readiness < 80,
+      className: readiness < 80 ? 'is-active' : '',
+      label: readiness < 80 ? `${setup.failed.length} setup gap${setup.failed.length === 1 ? '' : 's'}` : 'Setup signals present',
+      detail: setup.detail,
+      help: conceptHelp('readiness', { project, drift, isReference }),
+    },
   ];
   const primarySignal = signalItems.find((item) => item.active) ?? signalItems[0];
-  const hiddenSignals = signalItems.filter((item) => item.key !== primarySignal.key);
 
   return (
     <article
@@ -1789,21 +2292,9 @@ const ExperimentalProjectCard = ({ project, onSelect, drift = [], isReference })
       <div className="project-card-exp__signals">
         <span className={primarySignal.className}>
           {primarySignal.label}
-          <small>{primarySignal.detail}</small>
           <InfoPopover {...primarySignal.help} />
+          <small>{primarySignal.detail}</small>
         </span>
-        <details className="project-card-exp__signal-more">
-          <summary>{hiddenSignals.length} more signal{hiddenSignals.length === 1 ? '' : 's'}</summary>
-          <div>
-            {hiddenSignals.map((item) => (
-              <span key={item.key} className={item.className}>
-                {item.label}
-                <small>{item.detail}</small>
-                <InfoPopover {...item.help} />
-              </span>
-            ))}
-          </div>
-        </details>
       </div>
 
       <div className="project-card-exp__footer">
@@ -1811,121 +2302,6 @@ const ExperimentalProjectCard = ({ project, onSelect, drift = [], isReference })
         <span className="project-card-exp__open">
           <ChevronRight size={15} />
         </span>
-      </div>
-    </article>
-  );
-};
-
-const ProjectCard = ({ project, onSelect, drift = [], isReference }) => {
-  const stack = stackList(project);
-  const risk = topRiskFinding(project.risks ?? []);
-  const readiness = project.aiReadiness?.score ?? 0;
-  const setup = readinessSummary(project.aiReadiness);
-  const archetype = projectArchetype(project, isReference);
-  const riskLabel = risk ? `${riskCategory(risk)}: ${risk.title}` : 'No hygiene findings';
-  const driftLabel = isReference ? 'Reference project' : drift.length ? `${drift.length} reference difference${drift.length === 1 ? '' : 's'}` : 'No reference differences';
-  return (
-    <article
-      onClick={() => onSelect(project)}
-      onKeyDown={(event) => openCardFromKeyboard(event, project, onSelect)}
-      className="group relative rounded-xl border border-slate-800 bg-slate-900 p-5 text-left transition-all hover:border-indigo-500/50 hover:bg-slate-900/80"
-      role="button"
-      tabIndex={0}
-      aria-label={`Open ${project.name}`}
-    >
-      {risk?.severity === 'high' && (
-        <div className="absolute right-0 top-0 rounded-bl-lg bg-rose-600 px-3 py-1 text-[10px] font-black uppercase text-white">
-          {riskCategory(risk)}
-        </div>
-      )}
-      {isReference && (
-        <div className="absolute right-0 top-0 rounded-bl-lg bg-indigo-600 px-3 py-1 text-[10px] font-black uppercase text-white">
-          Reference
-        </div>
-      )}
-
-      <div className="mb-4 flex items-start justify-between gap-4">
-        <div className="min-w-0">
-          <div className="mb-2 flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-slate-500">
-            {archetype}
-            {isReference && <InfoPopover {...conceptHelp('reference', { project, drift, isReference })} />}
-          </div>
-          <h3 className="flex items-center gap-2 truncate text-lg font-bold text-slate-100 transition-colors group-hover:text-indigo-400">
-            {project.name}
-            {risk && <ShieldAlert size={16} className={risk.severity === 'high' ? 'text-rose-500' : 'text-amber-400'} />}
-            {drift.length > 0 && <GitCompareArrows size={16} className={topDriftFinding(drift)?.severity === 'high' ? 'text-rose-400' : 'text-amber-400'} />}
-          </h3>
-          <p className="mt-1 flex items-center gap-1 truncate font-mono text-xs text-slate-500">
-            <FolderOpen size={12} /> {project.path}
-          </p>
-        </div>
-        <div className="text-right">
-          <div className={`flex items-center justify-end gap-1 font-mono text-sm font-bold ${setup.failed.length ? 'text-amber-400' : 'text-emerald-400'}`}>
-            {setup.total ? `${setup.passed}/${setup.total}` : `${readiness}%`}
-            <InfoPopover {...conceptHelp('readiness', { project, drift, isReference })} align="right" />
-          </div>
-          <div className="text-[10px] font-bold uppercase tracking-widest text-slate-600">Setup checks</div>
-        </div>
-      </div>
-
-      <div className="mb-6 grid grid-cols-2 gap-4">
-        <div>
-          <div className="mb-2 flex items-center gap-1 text-[10px] font-bold uppercase tracking-widest text-slate-500">
-            <Dna size={10} /> Stack <InfoPopover {...conceptHelp('stack', { project, drift, isReference })} />
-          </div>
-          <div className="flex flex-wrap gap-1">
-            {stack.slice(0, 4).map((tech) => <TechPill key={tech} tech={tech} />)}
-            {stack.length === 0 && <span className="text-xs text-slate-600">Unknown</span>}
-            {stack.length > 4 && <span className="text-[10px] font-bold text-slate-500">+{stack.length - 4}</span>}
-          </div>
-        </div>
-        <div>
-          <div className="mb-2 flex items-center gap-1 text-[10px] font-bold uppercase tracking-widest text-slate-500">
-            <FileJson size={10} /> Package
-          </div>
-          <div className="font-mono text-sm font-bold text-slate-300">{project.package?.manager ?? 'None'}</div>
-          <div className="mt-1 text-xs text-slate-500">{Object.keys(project.scripts ?? {}).length} scripts</div>
-          <div className={`mt-1 flex items-center gap-1 text-xs font-bold ${drift.length ? 'text-amber-400' : 'text-emerald-400'}`}>
-            {driftLabel}
-            <InfoPopover {...conceptHelp('drift', { project, drift, isReference })} align="right" />
-          </div>
-        </div>
-      </div>
-
-      <div className="mb-5 grid gap-2">
-        <div className={`evidence-line ${risk ? 'evidence-line--risk' : 'evidence-line--good'}`}>
-          <div>
-            <strong>{riskLabel}</strong>
-            <span>{riskMeaning(risk)}</span>
-          </div>
-          <InfoPopover {...conceptHelp('risk', { project, drift, isReference })} align="right" />
-        </div>
-        <div className={`evidence-line ${project.git?.dirty ? 'evidence-line--dirty' : 'evidence-line--good'}`}>
-          <div>
-            <strong>{project.git?.dirty ? 'Dirty worktree' : 'Clean worktree'}</strong>
-            <span>{project.git?.dirty ? 'Uncommitted local changes detected' : project.git?.isRepo ? 'No uncommitted changes detected' : 'Not detected as Git'}</span>
-          </div>
-          <InfoPopover {...conceptHelp('dirty', { project, drift, isReference })} align="right" />
-        </div>
-      </div>
-
-      <div className="flex items-center justify-between border-t border-slate-800/50 pt-4">
-        <div className="flex min-w-0 gap-4">
-          <div className="flex min-w-0 items-center gap-1.5 text-xs text-slate-400">
-            <GitBranch size={12} className="text-indigo-400" />
-            <span className="truncate font-mono">{project.git?.branch ?? (project.git?.isRepo ? 'detached' : 'not git')}</span>
-          </div>
-          <div className="flex items-center gap-1.5 text-xs text-slate-400">
-            <Clock size={12} className="text-slate-500" />
-            <span>{formatDate(project.git?.lastCommit?.date)}</span>
-          </div>
-        </div>
-        <div className="flex items-center gap-3">
-          <span className="flex items-center gap-1 text-[10px] font-black uppercase tracking-widest text-slate-500 transition-colors group-hover:text-indigo-400">
-            Open <ChevronRight size={12} />
-          </span>
-          <StatusDot project={project} />
-        </div>
       </div>
     </article>
   );
@@ -2044,20 +2420,27 @@ const DiscoveryReview = ({ candidates, onCommitProjectStates, onDefer }) => {
   );
 };
 
-const ProjectDrawer = ({ project, open, onClose, drift = [], referenceProject, isReference, onRefreshScan, scanRefreshStatus }) => {
-  const [activeTab, setActiveTab] = useState('overview');
+const ProjectDrawer = ({ project, open, onClose, drift = [], referenceProject, isReference, onRefreshScan, scanRefreshStatus, initialTab = 'overview' }) => {
+  const [activeTab, setActiveTab] = useState(initialTab);
   const risks = project.risks ?? [];
   const launchRisks = launchHygieneRisks(project);
   const normalChecks = looksNormalChecks(project);
   const skippedChecks = project.skippedChecks ?? [];
   const checks = project.aiReadiness?.checks ?? [];
-  const briefLines = agentBriefLines(project, drift);
+  const briefText = agentBriefLines(project, drift).join('\n');
+  const stack = stackList(project);
   const tabs = [
-    { id: 'overview', label: 'Overview', icon: ShieldAlert },
-    { id: 'source', label: 'Source', icon: GitBranch },
+    { id: 'overview', label: 'Overview', icon: FolderOpen },
+    { id: 'signals', label: 'Signals', icon: ShieldAlert },
     { id: 'drift', label: 'Drift', icon: GitCompareArrows },
     { id: 'brief', label: 'Brief', icon: FileJson },
   ];
+  useEffect(() => {
+    if (open) {
+      setActiveTab(initialTab);
+    }
+  }, [initialTab, open, project.id]);
+
   return (
     <>
       <button className={`attention-drawer__scrim ${open ? 'is-open' : ''}`} type="button" aria-label={`Close ${project.name}`} onClick={onClose} aria-hidden={!open} tabIndex={open ? 0 : -1} />
@@ -2079,28 +2462,28 @@ const ProjectDrawer = ({ project, open, onClose, drift = [], referenceProject, i
           {tabs.map((tab) => {
             const Icon = tab.icon;
             return (
-              <div key={tab.id} className={`project-drawer__tab ${activeTab === tab.id ? 'is-active' : ''}`}>
-                <button
-                  type="button"
-                  onClick={() => setActiveTab(tab.id)}
-                >
+              <button
+                key={tab.id}
+                type="button"
+                className={`project-drawer__tab ${activeTab === tab.id ? 'is-active' : ''}`}
+                onClick={() => setActiveTab(tab.id)}
+              >
+                <span className="project-drawer__tab-label">
                   <Icon size={14} />
                   {tab.label}
-                </button>
-                <InfoPopover {...drawerTabHelp[tab.id]} align={tab.id === 'brief' ? 'right' : 'left'} />
-              </div>
+                </span>
+                <InfoPopover {...drawerTabHelp[tab.id]} align={tab.id === 'brief' ? 'right' : 'left'} stopClick={false} />
+              </button>
             );
           })}
         </nav>
 
         <div className="project-drawer__body custom-scrollbar">
-          {activeTab === 'source' ? (
-            <ProjectSourceSignal project={project} onRefreshScan={onRefreshScan} refreshStatus={scanRefreshStatus} />
-          ) : activeTab === 'drift' ? (
+          {activeTab === 'signals' ? (
             <>
               <section className="project-drawer__panel project-drawer__panel--readiness">
                 <div className="project-drawer__section-heading">
-                  <h3><Cpu size={14} /> Setup Readiness</h3>
+                  <h3><Cpu size={14} /> Setup Signals</h3>
                   <span>{readinessSummary(project.aiReadiness).label}</span>
                 </div>
                 <div className="project-drawer__meter">
@@ -2112,73 +2495,197 @@ const ProjectDrawer = ({ project, open, onClose, drift = [], referenceProject, i
                       {check.passed ? <CheckCircle2 size={15} className="text-emerald-400" /> : <AlertTriangle size={15} className="text-amber-400" />}
                       <span>{check.label}</span>
                     </div>
-                  )) : <span className="text-sm text-slate-500">No checklist details in this dataset.</span>}
+                  )) : <span className="text-sm text-slate-500">No setup signal details in this dataset.</span>}
                 </div>
               </section>
 
               <section>
                 <div className="project-drawer__section-heading project-drawer__section-heading--subtle">
                   <h3>
-                    <GitCompareArrows size={14} /> Reference Differences
-                    <InfoPopover {...briefExplainers.Reference} />
+                    <AlertTriangle size={14} /> Fix Before Sharing
+                    <InfoPopover {...briefExplainers['Launch hygiene']} />
                   </h3>
-                  <span>
-                    vs. {referenceProject?.name ?? 'reference'}
-                  </span>
+                  <span>{launchRisks.length} finding{launchRisks.length === 1 ? '' : 's'}</span>
                 </div>
-                {isReference ? (
-                  <div className="project-drawer__panel project-drawer__empty">
-                    This project is the current reference. Other projects are compared against it.
-                  </div>
-                ) : drift.length > 0 ? (
-                  <div className="project-drawer__stack">
-                    {drift.map((item) => (
-                      <div key={item.id} className={`project-drawer__drift-card ${severityStyles[item.severity] || severityStyles.medium}`}>
-                        <div className="project-drawer__drift-head">
-                          <div>
-                            <div className="project-drawer__drift-title">{item.category}</div>
-                            <div className="project-drawer__drift-detail">{item.detail}</div>
-                            <div className="project-drawer__why">{driftWhyShown(item)}</div>
+                <div className="project-drawer__stack">
+                  {launchRisks.length > 0 ? launchRisks.map((risk) => (
+                    <div key={`${risk.id}-${risk.detail}`} className={`project-drawer__drift-card ${severityStyles[risk.severity] || severityStyles.low}`}>
+                      <div className="project-drawer__drift-head">
+                        <div>
+                          <div className="project-drawer__drift-title">{risk.title}</div>
+                          <div className="project-drawer__drift-detail">{risk.detail}</div>
+                          <div className="project-drawer__why">
+                            Confidence: {risk.confidence ?? 'medium'}{risk.evidence?.length ? ` · Evidence: ${risk.evidence.join(', ')}` : ''}
                           </div>
-                          <div className="project-drawer__tag">Advisory</div>
+                          {risk.fix && <div className="project-drawer__fix">{risk.fix}</div>}
                         </div>
-                        <div className="project-drawer__diff-row">
-                          <span className="project-drawer__diff-value project-drawer__diff-value--current">{item.current}</span>
-                          <ChevronRight size={13} className="project-drawer__diff-arrow" />
-                          <span className="project-drawer__diff-value project-drawer__diff-value--reference">{item.reference}</span>
-                        </div>
+                        <div className="project-drawer__tag">{riskCategory(risk)}</div>
                       </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="project-drawer__panel project-drawer__empty text-emerald-300">
-                    <CheckCircle2 className="mx-auto mb-2" /> Matches the reference on package, scripts, docs, env, CI, and runtime hints checked by Aperture.
-                  </div>
-                )}
+                    </div>
+                  )) : (
+                    <div className="project-drawer__panel project-drawer__empty text-emerald-300">
+                      <CheckCircle2 className="mx-auto mb-2" /> No stack-aware launch findings detected.
+                    </div>
+                  )}
+                </div>
               </section>
-            </>
-          ) : activeTab === 'brief' ? (
-            <>
-              <section className="project-drawer__panel">
+
+              <section>
+                <div className="project-drawer__section-heading project-drawer__section-heading--subtle">
+                  <h3><ShieldAlert size={14} /> Hygiene Signals</h3>
+                  <span>{risks.length}</span>
+                </div>
+                <div className="project-drawer__stack">
+                  {risks.length > 0 ? risks.map((risk) => (
+                    <div key={`${risk.id}-${risk.detail}`} className={`project-drawer__drift-card ${severityStyles[risk.severity] || severityStyles.low}`}>
+                      <div className="project-drawer__drift-title">{riskCategory(risk)}: {risk.title}</div>
+                      <div className="project-drawer__drift-detail">{risk.detail}</div>
+                      <div className="project-drawer__why">{riskWhyShown(risk)}</div>
+                    </div>
+                  )) : (
+                    <div className="project-drawer__panel project-drawer__empty text-emerald-300">
+                      <CheckCircle2 className="mx-auto mb-2" /> No hygiene findings from {SCANNER_CHECK_SCOPE}.
+                    </div>
+                  )}
+                </div>
+              </section>
+
+              <section>
+                <div className="project-drawer__section-heading project-drawer__section-heading--subtle">
+                  <h3><CheckCircle2 size={14} /> Normalized Signals</h3>
+                </div>
+                <div className="project-drawer__stack">
+                  {normalChecks.length > 0 ? normalChecks.map((check) => (
+                    <div key={check.title} className="project-drawer__normal-card">
+                      <div className="project-drawer__drift-title">{check.title}</div>
+                      <div className="project-drawer__drift-detail">{check.detail}</div>
+                    </div>
+                  )) : (
+                    <div className="project-drawer__panel project-drawer__empty">
+                      No stack-specific normalizations apply yet.
+                    </div>
+                  )}
+                </div>
+              </section>
+
+              <section>
                 <div className="project-drawer__section-heading project-drawer__section-heading--subtle">
                   <h3>
-                    <FileJson size={14} /> Agent Brief Preview
-                    <InfoPopover
-                      title="Agent brief"
-                      body="Use this when handing the project to an AI coding agent or returning later yourself. It is generated from observed project metadata, risks, drift, scripts, and suggested files."
-                    />
+                    <CircleHelp size={14} /> Skipped Checks
+                    <InfoPopover {...briefExplainers['Skipped checks']} />
                   </h3>
                 </div>
-                <div className="agent-brief-preview">
-                  {briefLines.map((line) => (
-                    <BriefLine key={line} line={line} />
+                <div className="project-drawer__stack">
+                  {skippedChecks.length > 0 ? skippedChecks.map((check) => (
+                    <div key={check.id} className="project-drawer__skipped-card">
+                      <div className="project-drawer__drift-title">{check.title}</div>
+                      <div className="project-drawer__drift-detail">{check.reason}</div>
+                    </div>
+                  )) : (
+                    <div className="project-drawer__panel project-drawer__empty text-emerald-300">
+                      <CheckCircle2 className="mx-auto mb-2" /> No checks were skipped for this project profile.
+                    </div>
+                  )}
+                </div>
+              </section>
+            </>
+          ) : activeTab === 'drift' ? (
+            <section>
+              <div className="project-drawer__section-heading project-drawer__section-heading--subtle">
+                <h3>
+                  <GitCompareArrows size={14} /> Reference Differences
+                  <InfoPopover {...briefExplainers.Reference} />
+                </h3>
+                <span>vs. {referenceProject?.name ?? 'reference'}</span>
+              </div>
+              {isReference ? (
+                <div className="project-drawer__panel project-drawer__empty">
+                  This project is the current reference. Other projects are compared against it.
+                </div>
+              ) : drift.length > 0 ? (
+                <div className="project-drawer__stack">
+                  {drift.map((item) => (
+                    <div key={item.id} className={`project-drawer__drift-card ${severityStyles[item.severity] || severityStyles.medium}`}>
+                      <div className="project-drawer__drift-head">
+                        <div>
+                          <div className="project-drawer__drift-title">{item.category}</div>
+                          <div className="project-drawer__drift-detail">{item.detail}</div>
+                          <div className="project-drawer__why">{driftWhyShown(item)}</div>
+                        </div>
+                        <div className="project-drawer__tag">Advisory</div>
+                      </div>
+                      <div className="project-drawer__diff-row">
+                        <span className="project-drawer__diff-value project-drawer__diff-value--current">{item.current}</span>
+                        <ChevronRight size={13} className="project-drawer__diff-arrow" />
+                        <span className="project-drawer__diff-value project-drawer__diff-value--reference">{item.reference}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="project-drawer__panel project-drawer__empty text-emerald-300">
+                  <CheckCircle2 className="mx-auto mb-2" /> Matches the reference on package, scripts, docs, env, CI, and runtime hints checked by Aperture.
+                </div>
+              )}
+            </section>
+          ) : activeTab === 'brief' ? (
+            <section className="project-drawer__panel">
+              <div className="project-drawer__section-heading project-drawer__section-heading--subtle">
+                <h3><FileJson size={14} /> Project Handoff</h3>
+              </div>
+              <CopyableHandoff text={briefText} label="project brief" />
+            </section>
+          ) : (
+            <>
+              <section className="project-drawer__stats">
+                <div className="project-drawer__stat">
+                  <div className="project-drawer__label">Branch</div>
+                  <div className="project-drawer__value font-mono">{project.git?.branch ?? 'Unknown'}</div>
+                </div>
+                <div className="project-drawer__stat">
+                  <div className="project-drawer__label">Worktree</div>
+                  <div className={`project-drawer__value ${project.git?.dirty ? 'text-amber-400' : 'text-emerald-400'}`}>{project.git?.dirty ? 'Dirty' : project.git?.isRepo ? 'Clean' : 'Not a Git repo'}</div>
+                </div>
+                <div className="project-drawer__stat">
+                  <div className="project-drawer__label">Last Commit</div>
+                  <div className="project-drawer__value">{formatDate(project.git?.lastCommit?.date)}</div>
+                </div>
+                <div className="project-drawer__stat">
+                  <div className="project-drawer__label">Runtime</div>
+                  <div className="project-drawer__value">
+                    <RuntimeStatusIndicator runtimeStatus={project.runtimeStatus} align="right" />
+                  </div>
+                </div>
+              </section>
+
+              <section className="project-drawer__panel project-drawer__panel--launch">
+                <div className="project-drawer__section-heading">
+                  <h3><Dna size={14} /> Project Shape</h3>
+                  <span>{PROJECT_STATE_LABELS[project.projectState] ?? 'Tracked'}</span>
+                </div>
+                <div className="launch-profile-grid">
+                  <div className="launch-profile-item">
+                    <span>Stack</span>
+                    <strong>{stack.slice(0, 4).join(' / ') || 'Unknown'}</strong>
+                  </div>
+                  <div className="launch-profile-item">
+                    <span>Package</span>
+                    <strong>{project.package?.manager ?? 'None'}</strong>
+                  </div>
+                  {launchProfileRows(project.launchProfile).map(([label, value]) => (
+                    <div key={label} className="launch-profile-item">
+                      <span>{label}</span>
+                      <strong>{value}</strong>
+                    </div>
                   ))}
                 </div>
               </section>
 
+              <ProjectSourceSignal project={project} onRefreshScan={onRefreshScan} refreshStatus={scanRefreshStatus} />
+
               <section className="project-drawer__panel">
                 <div className="project-drawer__section-heading project-drawer__section-heading--subtle">
-                  <h3><FileJson size={14} /> Useful Commands</h3>
+                  <h3><Terminal size={14} /> Useful Commands</h3>
                 </div>
                 <div className="project-drawer__command-grid">
                   {Object.entries(project.scripts ?? {}).length > 0 ? Object.entries(project.scripts).map(([name, command]) => (
@@ -2188,222 +2695,6 @@ const ProjectDrawer = ({ project, open, onClose, drift = [], referenceProject, i
                   )) : <span className="text-sm text-slate-500">No package scripts detected.</span>}
                 </div>
               </section>
-            </>
-          ) : (
-            <>
-          <section className="project-drawer__stats">
-            <div className="project-drawer__stat">
-              <div className="project-drawer__label">Branch</div>
-              <div className="project-drawer__value font-mono">{project.git?.branch ?? 'Unknown'}</div>
-            </div>
-            <div className="project-drawer__stat">
-              <div className="project-drawer__label">Worktree</div>
-              <div className={`project-drawer__value ${project.git?.dirty ? 'text-amber-400' : 'text-emerald-400'}`}>{project.git?.dirty ? 'Dirty' : project.git?.isRepo ? 'Clean' : 'Not a Git repo'}</div>
-            </div>
-            <div className="project-drawer__stat">
-              <div className="project-drawer__label">Last Commit</div>
-              <div className="project-drawer__value">{formatDate(project.git?.lastCommit?.date)}</div>
-            </div>
-            <div className="project-drawer__stat">
-              <div className="project-drawer__label">Runtime</div>
-              <div className="project-drawer__value">
-                <RuntimeStatusIndicator runtimeStatus={project.runtimeStatus} align="right" />
-              </div>
-            </div>
-          </section>
-
-          <section className="project-drawer__panel project-drawer__panel--launch">
-            <div className="project-drawer__section-heading">
-              <h3><ShieldAlert size={14} /> Detected Launch Profile</h3>
-              <span>{PROJECT_STATE_LABELS[project.projectState] ?? 'Tracked'}</span>
-            </div>
-            <div className="launch-profile-grid">
-              {launchProfileRows(project.launchProfile).map(([label, value]) => (
-                <div key={label} className="launch-profile-item">
-                  <span>{label}</span>
-                  <strong>{value}</strong>
-                </div>
-              ))}
-            </div>
-          </section>
-
-          <section>
-            <div className="project-drawer__section-heading project-drawer__section-heading--subtle">
-              <h3>
-                <AlertTriangle size={14} /> Fix Before Sharing
-                <InfoPopover {...briefExplainers['Launch hygiene']} />
-              </h3>
-              <span>{launchRisks.length} finding{launchRisks.length === 1 ? '' : 's'}</span>
-            </div>
-            <div className="project-drawer__stack">
-              {launchRisks.length > 0 ? launchRisks.map((risk) => (
-                <div key={`${risk.id}-${risk.detail}`} className={`project-drawer__drift-card ${severityStyles[risk.severity] || severityStyles.low}`}>
-                  <div className="project-drawer__drift-head">
-                    <div>
-                      <div className="project-drawer__drift-title">{risk.title}</div>
-                      <div className="project-drawer__drift-detail">{risk.detail}</div>
-                      <div className="project-drawer__why">
-                        Confidence: {risk.confidence ?? 'medium'}{risk.evidence?.length ? ` · Evidence: ${risk.evidence.join(', ')}` : ''}
-                      </div>
-                      {risk.fix && <div className="project-drawer__fix">{risk.fix}</div>}
-                    </div>
-                    <div className="project-drawer__tag">{riskCategory(risk)}</div>
-                  </div>
-                </div>
-              )) : (
-                <div className="project-drawer__panel project-drawer__empty text-emerald-300">
-                  <CheckCircle2 className="mx-auto mb-2" /> No stack-aware launch findings detected.
-                </div>
-              )}
-            </div>
-          </section>
-
-          <section>
-            <div className="project-drawer__section-heading project-drawer__section-heading--subtle">
-              <h3><CheckCircle2 size={14} /> Looks Normal</h3>
-            </div>
-            <div className="project-drawer__stack">
-              {normalChecks.length > 0 ? normalChecks.map((check) => (
-                <div key={check.title} className="project-drawer__normal-card">
-                  <div className="project-drawer__drift-title">{check.title}</div>
-                  <div className="project-drawer__drift-detail">{check.detail}</div>
-                </div>
-              )) : (
-                <div className="project-drawer__panel project-drawer__empty">
-                  No stack-specific normalizations apply yet.
-                </div>
-              )}
-            </div>
-          </section>
-
-          <section>
-            <div className="project-drawer__section-heading project-drawer__section-heading--subtle">
-              <h3>
-                <CircleHelp size={14} /> Skipped Checks
-                <InfoPopover {...briefExplainers['Skipped checks']} />
-              </h3>
-            </div>
-            <div className="project-drawer__stack">
-              {skippedChecks.length > 0 ? skippedChecks.map((check) => (
-                <div key={check.id} className="project-drawer__skipped-card">
-                  <div className="project-drawer__drift-title">{check.title}</div>
-                  <div className="project-drawer__drift-detail">{check.reason}</div>
-                </div>
-              )) : (
-                <div className="project-drawer__panel project-drawer__empty text-emerald-300">
-                  <CheckCircle2 className="mx-auto mb-2" /> No checks were skipped for this project profile.
-                </div>
-              )}
-            </div>
-          </section>
-
-          <section className="project-drawer__panel project-drawer__panel--readiness">
-            <div className="project-drawer__section-heading">
-              <h3><Cpu size={14} /> Setup Readiness</h3>
-              <span>{readinessSummary(project.aiReadiness).label}</span>
-            </div>
-            <div className="project-drawer__meter">
-              <div style={{ width: `${project.aiReadiness?.score ?? 0}%` }} />
-            </div>
-            <div className="project-drawer__check-grid">
-              {checks.length > 0 ? checks.map((check) => (
-                <div key={check.id} className="project-drawer__check">
-                  {check.passed ? <CheckCircle2 size={15} className="text-emerald-400" /> : <AlertTriangle size={15} className="text-amber-400" />}
-                  <span>{check.label}</span>
-                </div>
-              )) : <span className="text-sm text-slate-500">No checklist details in this dataset.</span>}
-            </div>
-          </section>
-
-          <section>
-            <div className="project-drawer__section-heading project-drawer__section-heading--subtle">
-              <h3>
-                <GitCompareArrows size={14} /> Reference Differences
-                <InfoPopover {...briefExplainers.Reference} />
-              </h3>
-              <span>
-                vs. {referenceProject?.name ?? 'reference'}
-              </span>
-            </div>
-            {isReference ? (
-              <div className="project-drawer__panel project-drawer__empty">
-                This project is the current reference. Other projects are compared against it.
-              </div>
-            ) : drift.length > 0 ? (
-              <div className="project-drawer__stack">
-                {drift.map((item) => (
-                  <div key={item.id} className={`project-drawer__drift-card ${severityStyles[item.severity] || severityStyles.medium}`}>
-                    <div className="project-drawer__drift-head">
-                      <div>
-                        <div className="project-drawer__drift-title">{item.category}</div>
-                        <div className="project-drawer__drift-detail">{item.detail}</div>
-                        <div className="project-drawer__why">{driftWhyShown(item)}</div>
-                      </div>
-                      <div className="project-drawer__tag">Advisory</div>
-                    </div>
-                    <div className="project-drawer__diff-row">
-                      <span className="project-drawer__diff-value project-drawer__diff-value--current">{item.current}</span>
-                      <ChevronRight size={13} className="project-drawer__diff-arrow" />
-                      <span className="project-drawer__diff-value project-drawer__diff-value--reference">{item.reference}</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="project-drawer__panel project-drawer__empty text-emerald-300">
-                <CheckCircle2 className="mx-auto mb-2" /> Matches the reference on package, scripts, docs, env, CI, and runtime hints checked by Aperture.
-              </div>
-            )}
-          </section>
-
-          <section>
-            <div className="project-drawer__section-heading project-drawer__section-heading--subtle">
-              <h3><ShieldAlert size={14} /> Risk Radar</h3>
-            </div>
-            <div className="project-drawer__stack">
-              {risks.length > 0 ? risks.map((risk) => (
-                <div key={`${risk.id}-${risk.detail}`} className={`project-drawer__drift-card ${severityStyles[risk.severity] || severityStyles.low}`}>
-                  <div className="project-drawer__drift-title">{riskCategory(risk)}: {risk.title}</div>
-                  <div className="project-drawer__drift-detail">{risk.detail}</div>
-                  <div className="project-drawer__why">{riskWhyShown(risk)}</div>
-                </div>
-              )) : (
-                <div className="project-drawer__panel project-drawer__empty text-emerald-300">
-                  <CheckCircle2 className="mx-auto mb-2" /> No hygiene findings from {SCANNER_CHECK_SCOPE}.
-                </div>
-              )}
-            </div>
-          </section>
-
-          <section className="project-drawer__panel">
-            <div className="project-drawer__section-heading project-drawer__section-heading--subtle">
-              <h3>
-                <FileJson size={14} /> Agent Brief Preview
-                <InfoPopover
-                  title="Agent brief"
-                  body="Use this when handing the project to an AI coding agent or returning later yourself. It is generated from observed project metadata, risks, drift, scripts, and suggested files."
-                />
-              </h3>
-            </div>
-            <div className="agent-brief-preview">
-              {briefLines.map((line) => (
-                <BriefLine key={line} line={line} />
-              ))}
-            </div>
-          </section>
-
-          <section className="project-drawer__panel">
-            <div className="project-drawer__section-heading project-drawer__section-heading--subtle">
-              <h3><FileJson size={14} /> Useful Commands</h3>
-            </div>
-            <div className="project-drawer__command-grid">
-              {Object.entries(project.scripts ?? {}).length > 0 ? Object.entries(project.scripts).map(([name, command]) => (
-                <div key={name} className="rounded-lg bg-slate-950/50 p-3 font-mono text-xs">
-                  <span className="text-indigo-300">{name}</span><span className="text-slate-600">: </span><span className="text-slate-300">{command}</span>
-                </div>
-              )) : <span className="text-sm text-slate-500">No package scripts detected.</span>}
-            </div>
-          </section>
             </>
           )}
         </div>
@@ -2453,7 +2744,7 @@ const SettingsModal = ({ open, projects, allProjects, referenceProjectId, onRefe
             <h3 className="settings-modal__setting-title">
               <FolderOpen size={16} /> Discovery Management
             </h3>
-            <p className="settings-modal__setting-copy">Manage tracked, ignored, archived, sleeping, and reference projects from the latest scanner data.</p>
+            <p className="settings-modal__setting-copy">Manage tracked, ignored, archived, sleeping, and reference projects from the latest workspace scan.</p>
           </div>
           <div className="settings-project-list">
             {allProjects.length > 0 ? allProjects.map((project) => (
@@ -2483,6 +2774,7 @@ const SettingsModal = ({ open, projects, allProjects, referenceProjectId, onRefe
 
 const gitChanges = (project) => Array.isArray(project.git?.changes) ? project.git.changes : [];
 const gitCommits = (project) => Array.isArray(project.git?.recentCommits) ? project.git.recentCommits : [];
+const hasGitSnapshot = (project) => Array.isArray(project.git?.changes) && Array.isArray(project.git?.recentCommits);
 const dirtyCount = (project) => gitChanges(project).length || (project.git?.dirty ? 1 : 0);
 const sourceActivityDate = (project) => project.git?.lastCommit?.date ?? gitCommits(project)[0]?.date;
 const shortSha = (sha) => (sha ? String(sha).slice(0, 7) : 'unknown');
@@ -2499,13 +2791,16 @@ const gitStatusMeta = (status = '') => {
 
 const sourceStateLabel = (project) => {
   if (!project.git?.isRepo) return 'Not Git';
+  if (project.git?.dirty && !hasGitSnapshot(project)) return 'Dirty (stale scan)';
   if (project.git?.dirty) return `${dirtyCount(project)} change${dirtyCount(project) === 1 ? '' : 's'}`;
   return 'Clean';
 };
 
 const ProjectSourceSignal = ({ project, onRefreshScan, refreshStatus }) => {
+  const [expandedCommitId, setExpandedCommitId] = useState(null);
   const changes = gitChanges(project);
   const commits = gitCommits(project);
+  const hasStaleGitSnapshot = project.git?.isRepo && !hasGitSnapshot(project);
   const hasUncapturedDirtyState = project.git?.dirty && changes.length === 0;
   const changedGroups = changes.reduce((groups, change) => {
     const meta = gitStatusMeta(change.status);
@@ -2574,15 +2869,15 @@ const ProjectSourceSignal = ({ project, onRefreshScan, refreshStatus }) => {
               </div>
             ))}
           </div>
-        ) : hasUncapturedDirtyState ? (
+        ) : hasStaleGitSnapshot || hasUncapturedDirtyState ? (
           <div className="source-empty source-empty--dirty">
-            <strong>Git reports uncommitted changes, but this scan did not include the changed-file list.</strong>
-            <span>Run the local scanner, then refresh scan data here. A future Git connector could fill this directly.</span>
+            <strong>{hasStaleGitSnapshot ? 'This Git snapshot is stale and missing changed-file/history detail.' : 'Git reports uncommitted changes, but this scan did not include the changed-file list.'}</strong>
+            <span>Refresh the workspace scan from this dev server, or run <code>npm run scan</code> in the workspace.</span>
             <div className="source-empty__actions">
               <button type="button" onClick={onRefreshScan} disabled={refreshStatus === 'refreshing'}>
-                {refreshStatus === 'refreshing' ? 'Refreshing' : 'Refresh scan data'}
+                {refreshStatus === 'refreshing' ? 'Rescanning' : 'Rescan Git state'}
               </button>
-              <em>{refreshStatus === 'updated' ? 'Scan data refreshed.' : refreshStatus === 'missing' ? 'No generated projects.json found.' : refreshStatus === 'error' ? 'Refresh failed.' : 'Git connector not connected.'}</em>
+              <em>{refreshStatus === 'updated' ? 'Git snapshot refreshed.' : refreshStatus === 'missing' ? 'No workspace scan found.' : refreshStatus === 'error' ? 'Rescan failed.' : 'Waiting for workspace scan.'}</em>
             </div>
           </div>
         ) : (
@@ -2601,7 +2896,9 @@ const ProjectSourceSignal = ({ project, onRefreshScan, refreshStatus }) => {
               <button
                 key={`${commit.sha}-${index}`}
                 type="button"
-                className="source-commit"
+                className={`source-commit ${expandedCommitId === commit.sha ? 'is-expanded' : ''}`}
+                aria-expanded={expandedCommitId === commit.sha}
+                onClick={() => setExpandedCommitId((current) => (current === commit.sha ? null : commit.sha))}
               >
                 <span className={`source-commit__node ${index === 0 ? 'is-head' : ''}`} />
                 <span className="source-commit__copy">
@@ -2612,12 +2909,20 @@ const ProjectSourceSignal = ({ project, onRefreshScan, refreshStatus }) => {
                       {commit.refs.slice(0, 2).map((ref) => <em key={ref}>{ref.replace('HEAD -> ', '')}</em>)}
                     </span>
                   )}
+                  {expandedCommitId === commit.sha && (
+                    <span className="source-commit__detail">
+                      <span><b>Full SHA</b><code>{commit.sha || 'unknown'}</code></span>
+                      <span><b>When</b>{formatDate(commit.date)}</span>
+                      {commit.refs?.length > 0 && <span><b>Refs</b>{commit.refs.map((ref) => ref.replace('HEAD -> ', '')).join(', ')}</span>}
+                      <span><b>Handoff note</b>{index === 0 ? 'Latest captured commit. Pair this with current dirty files before handoff.' : 'Recent commit from scanner history. Full diff is not captured in this scan.'}</span>
+                    </span>
+                  )}
                 </span>
               </button>
             ))}
           </div>
         ) : (
-          <div className="source-empty">{project.git?.isRepo ? 'No recent commit history captured. Run the local scanner again.' : 'Git history appears when a repo is detected.'}</div>
+          <div className="source-empty">{project.git?.isRepo ? 'No recent commit history captured. Refresh the workspace scan to check again.' : 'Git history appears when a repo is detected.'}</div>
         )}
       </section>
     </div>
@@ -2634,17 +2939,23 @@ const BriefLine = ({ line }) => {
   );
 };
 
-const Sidebar = ({ settingsOpen, onOpenSettings }) => (
-  <aside className="flex w-20 flex-col items-center border-r border-slate-800 bg-slate-950 py-8 transition-all">
-    <div className="mb-12 flex h-10 w-10 items-center justify-center border border-indigo-500/30 bg-indigo-500/10 text-indigo-300">
-      <Zap size={20} />
+const Sidebar = ({ activeSection, collapsed, onSectionChange, onToggleCollapsed }) => (
+  <aside className={`app-sidebar ${collapsed ? 'is-collapsed' : ''}`}>
+    <div className="app-sidebar__brand">
+      <div className="app-sidebar__mark">
+        <Zap size={20} />
+      </div>
+      <div className="app-sidebar__brand-text">
+        <strong>Aperture</strong>
+        <span>Local workspace</span>
+      </div>
     </div>
 
-    <nav className="flex-1 space-y-2 px-3">
+    <nav className="app-sidebar__nav" aria-label="Primary">
       {[
-        { name: 'Workspace', icon: LayoutDashboard, active: !settingsOpen },
-        { name: 'Attention', icon: AlertTriangle, active: false },
-        { name: 'Settings', icon: Settings, active: settingsOpen, onClick: onOpenSettings },
+        { name: 'Projects', icon: FolderOpen, active: activeSection === 'projects', onClick: () => onSectionChange('projects') },
+        { name: 'Workspace', icon: LayoutDashboard, active: activeSection === 'workspace', onClick: () => onSectionChange('workspace') },
+        { name: 'Brief', icon: FileJson, active: activeSection === 'brief', onClick: () => onSectionChange('brief') },
       ].map((item) => (
         <button
           key={item.name}
@@ -2652,12 +2963,24 @@ const Sidebar = ({ settingsOpen, onOpenSettings }) => (
           title={item.name}
           aria-label={item.name}
           onClick={item.onClick}
-          className={`flex h-11 w-11 items-center justify-center transition-all ${item.active ? 'bg-indigo-600/10 text-indigo-400' : 'text-slate-500 hover:bg-slate-900 hover:text-slate-300'}`}
+          className={`app-sidebar__item ${item.active ? 'is-active' : ''}`}
         >
           <item.icon size={20} />
+          <span>{item.name}</span>
         </button>
       ))}
     </nav>
+
+    <button
+      type="button"
+      className="app-sidebar__collapse"
+      onClick={onToggleCollapsed}
+      aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+      title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+    >
+      {collapsed ? <ChevronRight size={18} /> : <ChevronLeft size={18} />}
+      <span>{collapsed ? 'Expand' : 'Collapse'}</span>
+    </button>
   </aside>
 );
 
@@ -2666,15 +2989,16 @@ export default function App() {
   const [dataStatus, setDataStatus] = useState('loading');
   const [selectedProject, setSelectedProject] = useState(null);
   const [projectDrawerOpen, setProjectDrawerOpen] = useState(false);
-  const [theme, setTheme] = useState(() => localStorage.getItem('aperture-theme') || localStorage.getItem('aperture-theme-mode') || 'dark');
-  const [attentionOpen, setAttentionOpen] = useState(false);
-  const [insightDrawer, setInsightDrawer] = useState(null);
+  const [projectDrawerInitialTab, setProjectDrawerInitialTab] = useState('overview');
+  const [activeSection, setActiveSection] = useState('workspace');
+  const [briefFocus, setBriefFocus] = useState('priority');
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem('aperture-sidebar-collapsed') === 'true');
+  const [theme, setTheme] = useState(() => normalizeThemeId(localStorage.getItem('aperture-theme') || localStorage.getItem('aperture-theme-mode') || 'base'));
   const [addProjectOpen, setAddProjectOpen] = useState(false);
   const [manualProjectFormOpen, setManualProjectFormOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [manualProjects, setManualProjects] = useState(readManualProjects);
   const [projectStates, setProjectStates] = useState(readProjectStates);
-  const [seenAttentionIds, setSeenAttentionIds] = useState(readSeenAttentionIds);
   const [referenceProjectId, setReferenceProjectId] = useState(() => localStorage.getItem('aperture-reference-project') || '');
   const [folderPickerMessage, setFolderPickerMessage] = useState('');
   const [scanRefreshStatus, setScanRefreshStatus] = useState('idle');
@@ -2708,14 +3032,18 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    document.documentElement.dataset.theme = theme === 'light' || theme === 'paper' ? 'light' : 'dark';
-    if (['signal', 'paper', 'terminal'].includes(theme)) {
-      document.documentElement.dataset.vibe = theme;
-    } else {
-      delete document.documentElement.dataset.vibe;
-    }
-    localStorage.setItem('aperture-theme', theme);
+    const activeTheme = APERTURE_THEMES.find((option) => option.id === normalizeThemeId(theme)) ?? APERTURE_THEMES[0];
+    document.documentElement.dataset.theme = activeTheme.mode;
+    document.documentElement.dataset.vibe = activeTheme.id;
+    document.documentElement.dataset.radius = activeTheme.radius;
+    document.documentElement.dataset.density = activeTheme.density;
+    document.documentElement.style.setProperty('--ap-icon-stroke', activeTheme.iconStroke);
+    localStorage.setItem('aperture-theme', activeTheme.id);
   }, [theme]);
+
+  useEffect(() => {
+    localStorage.setItem('aperture-sidebar-collapsed', String(sidebarCollapsed));
+  }, [sidebarCollapsed]);
 
   useEffect(() => {
     localStorage.setItem(MANUAL_PROJECTS_STORAGE_KEY, JSON.stringify(manualProjects));
@@ -2751,14 +3079,20 @@ export default function App() {
   const projects = useMemo(() => allProjects.filter((project) => TRACKED_PROJECT_STATES.has(project.projectState)), [allProjects]);
   const workspaceRootLabel = scan?.workspaceRoot ?? (manualProjects.length ? 'Manual entries' : '');
   const shouldShowDashboard = dataStatus === 'live' || manualProjects.length > 0;
-  const displayedDataStatus = dataStatus === 'live' ? 'Generated projects.json' : dataStatus === 'loading' ? 'Analyzing' : manualProjects.length ? 'Manual entries' : 'No workspace yet';
   const refreshScanData = async () => {
     setScanRefreshStatus('refreshing');
     try {
-      const response = await fetch('/projects.json', { cache: 'no-store' });
+      let response = await fetch('/api/rescan', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ root: scan?.workspaceRoot || undefined }),
+      });
+      if (response.status === 404 || response.status === 405) {
+        response = await fetch('/projects.json', { cache: 'no-store' });
+      }
       const contentType = response.headers.get('content-type') ?? '';
       if (!response.ok || !contentType.includes('application/json')) {
-        throw new Error('missing');
+        throw new Error(response.status === 404 ? 'missing' : 'error');
       }
       const data = await response.json();
       if (data?.schemaVersion !== 'aperture.scan.v1' || !Array.isArray(data.projects)) {
@@ -2783,7 +3117,18 @@ export default function App() {
     setManualProjectFormOpen(false);
   };
   const handleShowScannerHelp = () => {
-    setFolderPickerMessage('Run a workspace rescan, then refresh: python3 scanner.py --root "/path/to/projects" --output public/projects.json');
+    setFolderPickerMessage('Run this workspace scan command, then refresh: python3 scanner.py --root "/path/to/projects" --output public/projects.json');
+  };
+  const showSection = (section) => {
+    setActiveSection(section);
+    setSettingsOpen(false);
+  };
+  const openBrief = (focus = 'priority') => {
+    setBriefFocus(focus);
+    showSection('brief');
+  };
+  const openSettings = () => {
+    setSettingsOpen(true);
   };
   const setProjectState = (projectId, state) => {
     setProjectStates((current) => ({ ...current, [projectId]: normalizeProjectState(state) }));
@@ -2819,47 +3164,14 @@ export default function App() {
     }
   }, [referenceProject?.id]);
   const driftMap = useMemo(() => createDriftMap(projects, referenceProject), [projects, referenceProject]);
-  const ProjectCardComponent = ExperimentalProjectCard;
 
-  const attentionItems = useMemo(() => createAttentionItems(projects, driftMap), [projects, driftMap]);
-  const riskItems = useMemo(() => projects.flatMap((project) => (project.risks ?? []).map((risk) => ({
-    id: `${project.id}-${risk.id}`,
-    project,
-    severity: risk.severity,
-    title: `${riskCategory(risk)}: ${risk.title}`,
-    detail: risk.detail,
-  }))), [projects]);
-  const dirtyItems = useMemo(() => projects.filter((project) => project.git?.dirty).map((project) => ({
-    id: `${project.id}-dirty`,
-    project,
-    severity: 'medium',
-    icon: 'dirty',
-    title: 'Dirty worktree',
-    detail: `${project.name} has uncommitted local changes.`,
-  })), [projects]);
-  const driftItems = useMemo(() => projects.flatMap((project) => (driftMap[project.id] ?? []).map((drift) => ({
-    id: `${project.id}-drift-${drift.id}`,
-    project,
-    severity: drift.severity,
-    title: `${drift.category} reference difference`,
-    detail: drift.detail,
-  }))), [projects, driftMap]);
-  const seenAttentionSet = useMemo(() => new Set(seenAttentionIds), [seenAttentionIds]);
-  const unseenAttentionIds = useMemo(
-    () => new Set(attentionItems.filter((item) => !seenAttentionSet.has(item.id)).map((item) => item.id)),
-    [attentionItems, seenAttentionSet],
-  );
-  const closeAttention = () => {
-    const ids = attentionItems.map((item) => item.id);
-    setSeenAttentionIds(ids);
-    localStorage.setItem('aperture-seen-attention', JSON.stringify(ids));
-    setAttentionOpen(false);
-  };
-  const openProjectDrawer = (project) => {
+  const signalItems = useMemo(() => createBriefSignalItems(projects, driftMap), [projects, driftMap]);
+  const openProjectDrawer = (project, initialTab = 'overview') => {
     if (projectCloseTimer.current) {
       window.clearTimeout(projectCloseTimer.current);
       projectCloseTimer.current = null;
     }
+    setProjectDrawerInitialTab(initialTab);
     setSelectedProject(project);
     window.requestAnimationFrame(() => {
       setProjectDrawerOpen(true);
@@ -2882,17 +3194,17 @@ export default function App() {
     const avgReadiness = projects.length
       ? Math.round(projects.reduce((sum, project) => sum + (project.aiReadiness?.score ?? 0), 0) / projects.length)
       : 0;
-    return { totalProjects: projects.length, riskCount, driftCount, dirtyCount, avgReadiness };
-  }, [projects, driftMap]);
+    return { totalProjects: projects.length, riskCount, driftCount, dirtyCount, avgReadiness, signalCount: signalItems.length };
+  }, [projects, driftMap, signalItems.length]);
   const statSummaries = useMemo(() => statBreakdown(projects, driftMap), [projects, driftMap]);
   const emptyWorkspaceTitle = allProjects.length ? 'No projects selected' : 'No projects found';
   const emptyWorkspaceDetail = allProjects.length
     ? 'Finish setup with tracked projects, or reopen Settings to move sleeping candidates into the workspace map.'
-    : 'The scanner output is live, but it did not include any projects. Try a broader root folder or add one manually.';
+    : 'The workspace scan is live, but it did not include any projects. Try a broader root folder or add one manually.';
   const glossaryHelp = {
-    title: 'Workspace Map glossary',
+    title: 'Lens glossary',
     body: [
-      'Risk: local hygiene evidence from scanner checks.',
+      'Risk: local hygiene evidence from workspace checks.',
       'Drift: factual differences from the selected reference project.',
       'Setup readiness: checklist coverage for agent and human handoff.',
       'Dirty worktree: Git reports uncommitted local changes.',
@@ -2903,44 +3215,27 @@ export default function App() {
   return (
     <div className="aperture-app flex h-screen bg-slate-950 font-sans text-slate-300 selection:bg-indigo-500/30">
       <Sidebar
-        projects={projects}
-        attentionItems={attentionItems}
-        unseenAttentionIds={unseenAttentionIds}
-        settingsOpen={settingsOpen}
-        onOpenSettings={() => setSettingsOpen(true)}
-        onOpenAttention={() => setAttentionOpen(true)}
-        onSelectProject={openProjectDrawer}
+        activeSection={activeSection}
+        collapsed={sidebarCollapsed}
+        onSectionChange={showSection}
+        onToggleCollapsed={() => setSidebarCollapsed((value) => !value)}
       />
       <main className="flex flex-1 flex-col overflow-hidden">
-        <header className="sticky top-0 z-10 flex min-h-20 flex-wrap items-center justify-between gap-4 border-b border-slate-800 bg-slate-950/50 px-4 backdrop-blur-md md:px-8">
+        <header className="sticky top-0 z-[100] flex min-h-20 flex-wrap items-center justify-between gap-4 border-b border-slate-800 bg-slate-950/50 px-4 backdrop-blur-md md:px-8">
           <div className="flex flex-1 items-center gap-3">
             <div className="text-xs font-black uppercase tracking-[0.28em] text-indigo-300">Aperture</div>
-          </div>
-          <div className="hidden text-right md:block">
-            <div className="text-xs font-bold uppercase tracking-widest text-slate-500">Data Source</div>
-            <div className={`text-sm font-bold ${dataStatus === 'live' ? 'text-emerald-400' : dataStatus === 'loading' ? 'text-indigo-300' : 'text-amber-400'}`}>
-              {displayedDataStatus}
-            </div>
           </div>
           <AddProjectButton
             open={addProjectOpen}
             onClick={() => setAddProjectOpen((value) => !value)}
           />
-          <AttentionButton
-            count={attentionItems.length}
-            unseenCount={unseenAttentionIds.size}
-            open={attentionOpen}
-            onClick={() => {
-              if (attentionOpen) {
-                closeAttention();
-              } else {
-                setAttentionOpen(true);
-              }
-            }}
-          />
           <ThemeSwitcher
             theme={theme}
             onThemeChange={setTheme}
+          />
+          <SettingsButton
+            open={settingsOpen}
+            onClick={openSettings}
           />
         </header>
         <div className="flex-1 space-y-10 overflow-y-auto p-4 custom-scrollbar md:p-8">
@@ -2968,63 +3263,89 @@ export default function App() {
                 />
               )}
 
-              <section className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-5">
-                <StatCard title="Projects Mapped" value={stats.totalProjects} icon={FolderOpen} summary={statSummaries.projects} help={{ title: 'Projects mapped', body: 'Projects currently shown from generated scanner output plus manual entries.' }} />
-                <StatCard title="Avg Setup Readiness" value={`${stats.avgReadiness}%`} icon={Cpu} tone="emerald" summary={statSummaries.readiness} help={conceptHelp('readiness')} />
-                <StatCard title="Risk Findings" value={stats.riskCount} icon={ShieldAlert} tone={stats.riskCount ? 'rose' : 'emerald'} summary={statSummaries.risks} help={conceptHelp('risk')} onClick={() => setInsightDrawer('risks')} />
-                <StatCard title="Dirty Worktrees" value={stats.dirtyCount} icon={GitBranch} tone={stats.dirtyCount ? 'rose' : 'emerald'} summary={statSummaries.dirty} help={conceptHelp('dirty')} onClick={() => setInsightDrawer('dirty')} />
-                <StatCard title="Reference Differences" value={stats.driftCount} icon={GitCompareArrows} tone={stats.driftCount ? 'rose' : 'emerald'} summary={statSummaries.drift} help={conceptHelp('drift')} onClick={() => setInsightDrawer('drift')} />
-              </section>
-
-              <section>
-                <div className="mb-6 flex flex-col justify-between gap-4 md:flex-row md:items-center">
-                  <div>
-                    <h2 className="flex items-center gap-3 text-2xl font-black tracking-tight text-slate-100">
-                      Workspace Map
-                      <span className="rounded bg-slate-800 px-2 py-0.5 text-[10px] uppercase tracking-tighter text-slate-500">Local-first</span>
-                      <InfoPopover {...glossaryHelp} />
-                    </h2>
-                    <p className="mt-1 text-sm italic text-slate-500">Factual scanner output from {workspaceRootLabel}.</p>
-                  </div>
-                  <div className="text-xs font-bold uppercase tracking-widest text-slate-500">Schema {scan?.schemaVersion ?? 'aperture.scan.v1'}</div>
-                </div>
-
-              {projects.length > 0 ? (
-                <div className="grid grid-cols-1 gap-6 md:grid-cols-2 2xl:grid-cols-3">
-                  {projects.map((project) => (
-                    <ProjectCardComponent
-                      key={project.id}
-                      project={project}
-                      drift={driftMap[project.id] ?? []}
-                      isReference={project.id === referenceProject?.id}
-                      onSelect={openProjectDrawer}
-                    />
-                  ))}
-                </div>
-              ) : (
-                <div className="rounded-2xl border border-dashed border-slate-800 p-12 text-center">
-                  <FolderOpen className="mx-auto mb-4 text-slate-600" size={36} />
-                  <h3 className="text-lg font-bold text-slate-200">{emptyWorkspaceTitle}</h3>
-                  <p className="mx-auto mt-2 max-w-md text-sm text-slate-500">{emptyWorkspaceDetail}</p>
-                  <div className="mt-5 flex flex-wrap justify-center gap-3">
-                    {allProjects.length > 0 ? (
-                      <button type="button" onClick={() => setSettingsOpen(true)} className="manual-submit justify-center">
-                        <Settings size={16} /> Open Settings
-                      </button>
-                    ) : (
-                      <>
-                        <button type="button" onClick={handleShowScannerHelp} className="manual-submit justify-center">
-                          <Terminal size={16} /> Show Scanner Command
-                        </button>
-                        <button type="button" onClick={() => setManualProjectFormOpen(true)} className="manual-submit justify-center">
-                          <Save size={16} /> Add Manually
-                        </button>
-                      </>
-                    )}
-                  </div>
-                </div>
+              {activeSection === 'workspace' && (
+                <WorkspaceView
+                  stats={stats}
+                  statSummaries={statSummaries}
+                  workspaceRootLabel={workspaceRootLabel}
+                  schemaVersion={scan?.schemaVersion}
+                  referenceProject={referenceProject}
+                  hasKnownProjects={allProjects.length > 0}
+                  onShowProjects={() => showSection('projects')}
+                  onOpenBrief={openBrief}
+                  onOpenSettings={openSettings}
+                  onShowScannerHelp={handleShowScannerHelp}
+                  onAddManualProject={() => setManualProjectFormOpen(true)}
+                  glossaryHelp={glossaryHelp}
+                />
               )}
-              </section>
+
+              {activeSection === 'brief' && (
+                <BriefView
+                  projects={projects}
+                  signalItems={signalItems}
+                  focus={briefFocus}
+                  onSelectProject={openProjectDrawer}
+                  onOpenFocus={openBrief}
+                  hasKnownProjects={allProjects.length > 0}
+                  onOpenSettings={openSettings}
+                  onShowScannerHelp={handleShowScannerHelp}
+                  onAddManualProject={() => setManualProjectFormOpen(true)}
+                />
+              )}
+
+              {activeSection === 'projects' && (
+                <section>
+                  <div className="mb-6 flex flex-col justify-between gap-4 md:flex-row md:items-center">
+                    <div>
+                      <div className="section-kicker">Projects</div>
+                      <h2 className="flex items-center gap-3 text-2xl font-black tracking-tight text-slate-100">
+                        Project lenses
+                        <span className="rounded bg-slate-800 px-2 py-0.5 text-[10px] uppercase tracking-tighter text-slate-500">Inventory</span>
+                        <InfoPopover {...glossaryHelp} />
+                      </h2>
+                      <p className="mt-1 text-sm italic text-slate-500">Open a project to inspect overview, signals, drift, and handoff context.</p>
+                    </div>
+                    <div className="text-xs font-bold uppercase tracking-widest text-slate-500">{projects.length} mapped</div>
+                  </div>
+
+                  {projects.length > 0 ? (
+                    <div className="grid grid-cols-1 gap-6 md:grid-cols-2 2xl:grid-cols-3">
+                      {projects.map((project) => (
+                        <ExperimentalProjectCard
+                          key={project.id}
+                          project={project}
+                          drift={driftMap[project.id] ?? []}
+                          isReference={project.id === referenceProject?.id}
+                          onSelect={openProjectDrawer}
+                        />
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="rounded-2xl border border-dashed border-slate-800 p-12 text-center">
+                      <FolderOpen className="mx-auto mb-4 text-slate-600" size={36} />
+                      <h3 className="text-lg font-bold text-slate-200">{emptyWorkspaceTitle}</h3>
+                      <p className="mx-auto mt-2 max-w-md text-sm text-slate-500">{emptyWorkspaceDetail}</p>
+                      <div className="mt-5 flex flex-wrap justify-center gap-3">
+                        {allProjects.length > 0 ? (
+                          <button type="button" onClick={() => setSettingsOpen(true)} className="manual-submit justify-center">
+                            <Settings size={16} /> Open Settings
+                          </button>
+                        ) : (
+                          <>
+                            <button type="button" onClick={handleShowScannerHelp} className="manual-submit justify-center">
+                              <Terminal size={16} /> Show Scan Command
+                            </button>
+                            <button type="button" onClick={() => setManualProjectFormOpen(true)} className="manual-submit justify-center">
+                              <Save size={16} /> Add Manually
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </section>
+              )}
 
               {scan?.scanErrors?.length > 0 && (
                 <section className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-5">
@@ -3064,56 +3385,6 @@ export default function App() {
         onClose={() => setSettingsOpen(false)}
       />
 
-      <AttentionDrawer
-        open={attentionOpen}
-        items={attentionItems}
-        unseenIds={unseenAttentionIds}
-        onClose={closeAttention}
-        onSelectProject={(project) => {
-          openProjectDrawer(project);
-          closeAttention();
-        }}
-      />
-
-      <InsightDrawer
-        open={insightDrawer === 'risks'}
-        title="Risk Findings"
-        subtitle="Local hygiene findings grouped by project."
-        emptyLabel={`No hygiene findings from ${SCANNER_CHECK_SCOPE}.`}
-        items={riskItems}
-        onClose={() => setInsightDrawer(null)}
-        onSelectProject={(project) => {
-          openProjectDrawer(project);
-          setInsightDrawer(null);
-        }}
-      />
-
-      <InsightDrawer
-        open={insightDrawer === 'dirty'}
-        title="Dirty Worktrees"
-        subtitle="Projects with uncommitted local changes."
-        emptyLabel="No dirty worktrees detected."
-        items={dirtyItems}
-        onClose={() => setInsightDrawer(null)}
-        onSelectProject={(project) => {
-          openProjectDrawer(project);
-          setInsightDrawer(null);
-        }}
-      />
-
-      <InsightDrawer
-        open={insightDrawer === 'drift'}
-        title="Reference Differences"
-        subtitle={`Compared against ${referenceProject?.name ?? 'the current reference'}.`}
-        emptyLabel="No reference differences detected."
-        items={driftItems}
-        onClose={() => setInsightDrawer(null)}
-        onSelectProject={(project) => {
-          openProjectDrawer(project);
-          setInsightDrawer(null);
-        }}
-      />
-
       {selectedProject && (
         <ProjectDrawer
           project={selectedProject}
@@ -3121,6 +3392,7 @@ export default function App() {
           drift={driftMap[selectedProject.id] ?? []}
           referenceProject={referenceProject}
           isReference={selectedProject?.id === referenceProject?.id}
+          initialTab={projectDrawerInitialTab}
           onRefreshScan={refreshScanData}
           scanRefreshStatus={scanRefreshStatus}
           onClose={closeProjectDrawer}

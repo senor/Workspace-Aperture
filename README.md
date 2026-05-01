@@ -29,14 +29,13 @@ The repository now includes a runnable Vite React app scaffold. It does not yet 
 
 ## Product Direction
 
-Aperture V1 is centered on five pillars:
+Aperture V1 is centered on three opinionated lenses:
 
-1. **Workspace Map**: factual inventory of local projects and their technical surface area.
-2. **Today's Attention**: a prioritized view of recent changes, stale projects, risks, and missing context.
-3. **Reference Project Drift**: compare projects against a chosen gold-standard project.
-4. **AI-Readiness Checklist**: show whether a project has the docs, scripts, and setup clarity an AI agent needs.
-5. **Launch Hygiene**: detect stack-aware leak and exposure risks without turning the product into a report-first scanner.
-6. **Agent Brief Export**: generate compact project context for Claude, Cursor, Codex, or an MCP client.
+1. **Projects**: the project map plus per-project overview, signals, drift, and brief lenses.
+2. **Workspace**: the overall local workspace lens for scan source, mapped projects, baseline, setup coverage, and open signal count.
+3. **Brief**: the action layer for prioritized setup, risk, Git, and reference signals plus copyable workspace handoff text.
+
+Signals such as setup readiness, dirty worktrees, reference drift, launch hygiene, skipped checks, and risk findings support those lenses. They are not separate destinations.
 
 Aperture should favor explainable facts over abstract health scores. Scores may come later, but V1 should first build trust with concrete signals: stack, package manager, Git branch, dirty state, last commit, scripts, docs, env risk, CI presence, launch profile, skipped checks, and traceable hygiene findings.
 
@@ -77,7 +76,7 @@ The current prototype has two pieces:
 1. The Vite app renders the preserved React dashboard from `src/App.jsx` using mock data.
 2. `scanner.py` can scan a local development folder and generate `public/projects.json` using the documented scanner contract. The dashboard loads that file automatically when present.
 
-The dashboard fetches `/projects.json` at runtime and falls back to a concise setup state when no generated scanner output exists. Reference Project Drift is available as a read-only comparison inside the dashboard, and Launch Hygiene appears inside each project detail drawer.
+The dashboard fetches `/projects.json` at runtime and falls back to a concise setup state when no generated scanner output exists. Reference differences and launch hygiene appear as read-only signals inside the Projects and Brief lenses.
 
 ## Launch Hygiene Notes
 
@@ -95,7 +94,20 @@ Launch Hygiene is deliberately contextual:
 - Execution roadmap: `Docs/Aperture Implementation Roadmap.md`
 - Local setup guide: `Docs/Local Setup Guide.md`
 - Scanner contract: `Docs/Scanner Output Contract.md`
+- Public architecture: `Docs/Public Architecture.md`
+- Public comms playbook: `Docs/Public Comms Playbook.md`
+- Repository structure: `Docs/Project Structure.md`
 - Competitive landscape: `Docs/Aperture Competitive Landscape.md`
+
+## Public Project Structure
+
+The repository now includes the first public collaboration scaffold:
+
+- `CONTRIBUTING.md`: contribution posture and PR expectations.
+- `SECURITY.md`: local-data and scanner-output security principles.
+- `.github/ISSUE_TEMPLATE/`: bug, feature, and scanner-signal issue templates.
+- `.github/pull_request_template.md`: review checklist for public PRs.
+- `.github/workflows/ci.yml`: build verification for pushes and pull requests.
 
 ## Trust Principles
 

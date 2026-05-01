@@ -7,9 +7,10 @@ This roadmap is the canonical execution plan for Aperture. The PRD explains what
 Aperture is a proof of concept:
 
 - The repository now has a runnable Vite React app scaffold.
-- `src/App.jsx` preserves the original React/Tailwind dashboard prototype with mock data.
-- `scanner.py` scans one local folder level and writes a basic `projects.json`.
-- There is no real scanner contract, dashboard data integration, database, or MCP server yet.
+- `src/App.jsx` renders a dashboard that can load generated scanner data and fall back to demo data.
+- `scanner.py` scans local project folders and writes the documented `aperture.scan.v1` contract.
+- Public-facing contribution, security, architecture, comms, and GitHub collaboration scaffolding has started.
+- There is no database, hosted sync, GitHub connector, GitLab connector, billing, or MCP server yet.
 
 ## Phase 0: Reframe Docs And Product Contract
 
@@ -18,7 +19,7 @@ Aperture is a proof of concept:
 **Deliverables:**
 
 - Add root `README.md` as the project entry point.
-- Rewrite the PRD around the V1 product pillars.
+- Rewrite the PRD around the V1 product lenses.
 - Replace the old roadmap with this phased execution plan.
 - Align setup and competitive docs with the local workspace observability positioning.
 
@@ -64,7 +65,7 @@ Aperture is a proof of concept:
 
 - Running the scanner produces deterministic JSON for discovered projects.
 - Each finding is based on observable files or Git commands.
-- Scanner output can support Workspace Map, AI-readiness, Risk Radar, and Drift views.
+- Scanner output can support the Projects, Workspace, and Brief lenses without changing the raw contract.
 
 ## Phase 3: Connect Dashboard To Real Data
 
@@ -94,11 +95,12 @@ Aperture is a proof of concept:
 **Deliverables:**
 
 - Theme switcher: add a compact FOQ-style vibe control for mode, tint, and special themes.
-- Workspace Map: project inventory and factual metadata.
-- Today's Attention: prioritized notices for recent changes, dirty state, stale projects, missing docs, risks, and drift.
-- Reference Project Drift: implemented as an advisory UI comparison against one selected reference project.
-- AI-Readiness Checklist: docs, scripts, env example, and setup clarity.
-- Risk Radar: local hygiene checks such as env risk, missing example env, missing scripts, and missing CI.
+- Projects lens: project inventory plus per-project overview, signals, drift, and brief.
+- Workspace lens: scan source, mapped projects, reference baseline, setup coverage, and open signal count.
+- Brief lens: one actionable queue for setup, risk, Git, and reference signals.
+- Reference differences: advisory comparison against one selected reference project.
+- Setup signals: docs, scripts, env example, and handoff clarity.
+- Hygiene signals: local findings such as env risk, missing example env, missing scripts, and missing CI.
 - Project lifecycle labels: active, sleeping, archived, experimental, production, and reference.
 
 **Acceptance criteria:**
@@ -113,7 +115,7 @@ Aperture is a proof of concept:
 
 **Deliverables:**
 
-- Generate a project-level agent brief from scanner and dashboard data.
+- Generate project-level and workspace-level briefs from scanner and dashboard data.
 - Include stack, commands, Git state, docs, risks, drift, and suggested files to inspect.
 - Provide copy/export behavior from the UI.
 

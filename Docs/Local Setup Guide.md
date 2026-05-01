@@ -1,6 +1,6 @@
-# Workspace Aperture Local Setup Guide
+# Aperture Local Setup Guide
 
-Aperture now has a runnable Vite React app scaffold around the original dashboard prototype. The app still uses mock dashboard data; scanner-to-dashboard integration is planned in the next roadmap phases.
+Aperture has a runnable Vite React dashboard and a read-only local scanner. The dashboard loads generated scanner output from `public/projects.json` when that file exists, then falls back to demo data for first-run exploration.
 
 ## Requirements
 
@@ -24,6 +24,7 @@ npm run dev
 ```
 
 Then open the local Vite URL printed in your terminal. The dashboard currently renders the preserved prototype UI from `src/App.jsx`.
+Generate scanner output first if you want to see your real workspace instead of demo data.
 
 ## Build The App
 
@@ -66,8 +67,8 @@ Current flow:
 1. Run the scanner.
 2. Generate `public/projects.json`.
 3. Start or refresh the dashboard.
-4. Review Workspace Map, Today's Attention, AI-Readiness, and Risk Radar signals from factual scanner output.
+4. Review the Projects, Workspace, and Brief lenses from factual scanner output.
 
 ## Next Engineering Step
 
-Follow Phase 4 in `Docs/Aperture Implementation Roadmap.md`: deepen the V1 product features, especially Reference Project Drift, lifecycle labels, richer Risk Radar, and Agent Briefs.
+Follow Phase 4 in `Docs/Aperture Implementation Roadmap.md`: deepen the three V1 lenses, especially reference differences, lifecycle labels, richer hygiene signals, and agent briefs.
