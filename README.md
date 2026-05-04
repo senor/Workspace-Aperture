@@ -29,13 +29,12 @@ The repository now includes a runnable Vite React app scaffold. It does not yet 
 
 ## Product Direction
 
-Aperture V1 is centered on three opinionated lenses:
+Aperture V1 is centered on two opinionated lenses:
 
 1. **Projects**: the project map plus per-project overview, signals, drift, and brief lenses.
-2. **Workspace**: the overall local workspace lens for scan source, mapped projects, baseline, setup coverage, and open signal count.
-3. **Brief**: the action layer for prioritized setup, risk, Git, and reference signals plus copyable workspace handoff text.
+2. **Brief**: the action layer for prioritized setup, risk, Git, and reference signals plus copyable workspace brief text.
 
-Signals such as setup readiness, dirty worktrees, reference drift, launch hygiene, skipped checks, and risk findings support those lenses. They are not separate destinations.
+Workspace-level signals such as setup readiness, dirty worktrees, reference drift, launch hygiene, skipped checks, and risk findings support those lenses. They are not separate destinations.
 
 Aperture should favor explainable facts over abstract health scores. Scores may come later, but V1 should first build trust with concrete signals: stack, package manager, Git branch, dirty state, last commit, scripts, docs, env risk, CI presence, launch profile, skipped checks, and traceable hygiene findings.
 
@@ -68,6 +67,16 @@ Scan this repo directly:
 ```bash
 python3 scanner.py --root . --output /tmp/aperture-projects.json
 ```
+
+### Runtime Detection
+
+Aperture detects running local apps by matching listening `localhost` ports to the server process working directory. For best results:
+
+- Start the dev server from the project root, for example `cd "/Users/mashi/Workspace Aperture" && npm run dev`.
+- Rescan while the dev server is running.
+- Use the dashboard's runtime rescan action when a project shows stale runtime evidence.
+
+Runtime status is a short-lived local snapshot. It expires quickly because ports and PIDs can be reused.
 
 ## How The Prototype Works
 

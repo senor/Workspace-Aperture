@@ -73,6 +73,15 @@ Some folders with project markers are implementation components, not workspace p
     "hasReadme": true,
     "agentContextFiles": []
   },
+  "agentContext": {
+    "instructionFiles": ["AGENTS.md"],
+    "skills": [
+      {
+        "name": "repo-skill",
+        "path": ".agents/skills/repo-skill/SKILL.md"
+      }
+    ]
+  },
   "env": {
     "files": [{ "name": ".env", "ignoredByGit": true }],
     "examples": [".env.example"],
@@ -137,9 +146,10 @@ Some folders with project markers are implementation components, not workspace p
 ## Field Notes
 
 - `id` is deterministic for a project path and suitable for UI keys.
-- `stack`, `package`, `scripts`, `runtime`, `git`, `docs`, `env`, and `ci` are factual scanner observations.
+- `stack`, `package`, `scripts`, `runtime`, `git`, `docs`, `agentContext`, `env`, and `ci` are factual scanner observations.
 - `git.changes` is a bounded, read-only snapshot from `git status --porcelain`; `status` keeps the porcelain status code and `path` is the current path for renamed files.
 - `git.recentCommits` is a bounded, read-only snapshot from local `git log` for compact history and source-signal views.
+- `agentContext.instructionFiles` includes read-only repo guidance files such as `AGENTS.md`, `CLAUDE.md`, `.cursor/rules`, and `.github/copilot-instructions.md`. `agentContext.skills` lists repo-local skill manifests found at `.agents/skills/*/SKILL.md` or `.codex/skills/*/SKILL.md`.
 - `aiReadiness.score` is derived from explicit checklist items, not an opaque health score.
 - `launchProfile` is a stack-aware detection summary. It should be treated as a scanner hint, not a full dependency graph.
 - `runtimeStatus` is a best-effort snapshot of local listening TCP ports from the last scan. `running` means a listener was matched to the project path through process working-directory evidence; `stopped` means no match was found; `unknown` means the port probe could not run.

@@ -38,6 +38,13 @@ DOC_FILES = [
     "ARCHITECTURE.md",
     "CONTRIBUTING.md",
 ]
+AGENT_CONTEXT_PATHS = [
+    "AGENTS.md",
+    "CLAUDE.md",
+    "ARCHITECTURE.md",
+    ".cursor/rules",
+    ".github/copilot-instructions.md",
+]
 ENV_EXAMPLE_FILES = [".env.example", ".env.sample", "env.example"]
 CI_PATHS = [".github/workflows", ".gitlab-ci.yml", "circle.yml", ".circleci/config.yml", "azure-pipelines.yml"]
 LOCKFILES = [
@@ -824,11 +831,55 @@ def collect_git(path: Path) -> dict[str, Any]:
 
 def collect_docs(path: Path) -> dict[str, Any]:
     present = [filename for filename in DOC_FILES if (path / filename).exists()]
-    agent_context = [filename for filename in ["AGENTS.md", "CLAUDE.md", "ARCHITECTURE.md"] if (path / filename).exists()]
+    agent_context = []
+    for context_path in AGENT_CONTEXT_PATHS:
+        item = path / context_path
+        if item.exists():
+            agent_context.append(context_path)
     return {
         "files": present,
         "hasReadme": any(filename.startswith("README") for filename in present),
         "agentContextFiles": agent_context,
+    }
+
+
+def collect_agent_context(path: Path) -> dict[str, Any]:
+    instruction_files = []
+    for context_path in AGENT_CONTEXT_PATHS:
+        item = path / context_path
+        if item.is_file():
+            instruction_files.append(context_path)
+        elif item.is_dir():
+            try:
+                rule_files = sorted(
+                    relative_path(path, child)
+                    for child in item.rglob("*")
+                    if child.is_file()
+                    and child.suffix.lower() in {".md", ".mdc", ".txt"}
+                    and not any(part in SCAN_EXCLUDED_DIRS for part in child.parts)
+                )
+            except OSError:
+                rule_files = []
+            instruction_files.extend(rule_files[:12])
+
+    skill_roots = [path / ".agents" / "skills", path / ".codex" / "skills"]
+    skills = []
+    for root in skill_roots:
+        if not root.exists():
+            continue
+        try:
+            skill_files = sorted(root.glob("*/SKILL.md"))
+        except OSError:
+            skill_files = []
+        for skill_file in skill_files[:20]:
+            skills.append({
+                "name": skill_file.parent.name,
+                "path": relative_path(path, skill_file),
+            })
+
+    return {
+        "instructionFiles": sorted(set(instruction_files)),
+        "skills": skills,
     }
 
 
@@ -996,6 +1047,7 @@ def scan_project(path: Path, listening_processes: Optional[list[dict[str, Any]]]
     text_files = collect_text_files(path)
     scripts = collect_scripts(package_json)
     docs = collect_docs(path)
+    agent_context = collect_agent_context(path)
     env = collect_env(path)
     ci = collect_ci(path)
     git = collect_git(path)
@@ -1015,6 +1067,7 @@ def scan_project(path: Path, listening_processes: Optional[list[dict[str, Any]]]
         "runtime": collect_runtime(path, package_json),
         "git": git,
         "docs": docs,
+        "agentContext": agent_context,
         "env": env,
         "ci": ci,
         "launchProfile": launch_profile,

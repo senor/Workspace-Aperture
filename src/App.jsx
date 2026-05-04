@@ -15,10 +15,9 @@ import {
   GitCompareArrows,
   GitBranch,
   Info,
-  LayoutDashboard,
+  Link,
   Map,
   Moon,
-  MoreHorizontal,
   Palette,
   Plus,
   RefreshCw,
@@ -58,7 +57,7 @@ const DEMO_SCAN = {
         recentCommits: [
           { sha: 'demo-4', date: new Date().toISOString(), message: 'Harden API middleware', refs: ['HEAD -> main'] },
           { sha: 'demo-3', date: '2026-04-29T17:12:00+02:00', message: 'Add launch profile risk summary', refs: [] },
-          { sha: 'demo-2', date: '2026-04-28T09:20:00+02:00', message: 'Document agent handoff flow', refs: [] },
+          { sha: 'demo-2', date: '2026-04-28T09:20:00+02:00', message: 'Document project brief flow', refs: [] },
         ],
       },
       docs: { files: ['README.md', 'AGENTS.md'], hasReadme: true, agentContextFiles: ['AGENTS.md'] },
@@ -129,6 +128,14 @@ const severityStyles = {
   info: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30',
 };
 
+const severityTones = {
+  critical: 'danger',
+  high: 'danger',
+  medium: 'warning',
+  low: 'info',
+  info: 'success',
+};
+
 const techColors = {
   JavaScript: 'bg-yellow-500/20 text-yellow-300 border-yellow-500/30',
   TypeScript: 'bg-blue-500/20 text-blue-300 border-blue-500/30',
@@ -153,8 +160,9 @@ const formatDate = (dateValue) => {
 const riskSeverityRank = { critical: 4, high: 3, medium: 2, low: 1, info: 0 };
 const MANUAL_PROJECTS_STORAGE_KEY = 'aperture-manual-projects';
 const PROJECT_STATES_STORAGE_KEY = 'aperture-project-states';
+const PROJECT_LIVE_LINKS_STORAGE_KEY = 'aperture-project-live-links';
 const SCANNER_CHECK_SCOPE = 'README, scripts, env, CI, and stack-aware launch checks';
-const TRACKED_PROJECT_STATES = new Set(['tracked', 'reference']);
+const TRACKED_PROJECT_STATES = new Set(['tracked']);
 const RUNTIME_STATUS_FRESH_MS = 1000 * 60 * 5;
 const PROJECT_STATE_LABELS = {
   candidate: 'Candidate',
@@ -164,6 +172,50 @@ const PROJECT_STATE_LABELS = {
   archived: 'Archived',
   sleeping: 'Sleeping',
 };
+const SETTINGS_PROJECT_STATE_OPTIONS = [
+  { value: 'tracked', label: 'Active' },
+  { value: 'ignored', label: 'Hidden' },
+];
+const LIVE_ENVIRONMENT_OPTIONS = [
+  { value: 'production', label: 'Production' },
+  { value: 'staging', label: 'Staging' },
+  { value: 'preview', label: 'Preview' },
+  { value: 'other', label: 'Other' },
+];
+const LIVE_PROVIDER_OPTIONS = [
+  { value: 'vercel', label: 'Vercel' },
+  { value: 'netlify', label: 'Netlify' },
+  { value: 'firebase', label: 'Firebase' },
+  { value: 'github-pages', label: 'GitHub Pages' },
+  { value: 'other', label: 'Other' },
+];
+const LIVE_CHECKLIST_ITEMS = [
+  { id: 'favicon', label: 'Favicon', detail: 'Browser tab, bookmark, and shortcut recognition may be weak.' },
+  { id: 'ogCard', label: 'OG card', detail: 'Shared links may render with missing, wrong, or generic previews.' },
+  { id: 'seo', label: 'SEO', detail: 'Search engines and link previews may use weak title, description, canonical, or indexability metadata.' },
+];
+const STARTER_AGENTS_MD = `# Agent Instructions
+
+## Project Context
+- What this project does:
+- Main entry points:
+- Important architecture notes:
+
+## Working Rules
+- Preserve existing patterns unless there is a clear reason to change them.
+- Do not edit generated files or secrets.
+- Keep changes scoped to the requested task.
+
+## Commands
+- Install:
+- Dev:
+- Test:
+- Build:
+
+## Before Finishing
+- Run the relevant tests or checks.
+- Call out anything that could not be verified.
+`;
 
 const APERTURE_THEMES = [
   {
@@ -301,6 +353,21 @@ const readinessSummary = (aiReadiness = {}) => {
   };
 };
 
+const agentContextSummary = (project) => {
+  const files = [
+    ...(project.agentContext?.instructionFiles ?? []),
+    ...(project.docs?.agentContextFiles ?? []),
+  ].filter(Boolean);
+  const uniqueFiles = [...new Set(files)];
+  const skills = project.agentContext?.skills ?? project.skills ?? [];
+  return {
+    files: uniqueFiles,
+    skills,
+    hasInstructions: uniqueFiles.length > 0,
+    hasSkills: skills.length > 0,
+  };
+};
+
 const riskCategory = (risk) => {
   if (!risk) return 'Scanner evidence';
   if (risk.category) {
@@ -390,13 +457,13 @@ const drawerTabHelp = {
     title: 'Signals',
     body: 'Use this to inspect setup gaps, launch findings, skipped checks, hygiene findings, and dirty worktree state.',
   },
-  drift: {
-    title: 'Drift',
-    body: 'Use this to compare the project against the selected reference. Differences are advisory facts, not automatic failures.',
-  },
   brief: {
     title: 'Project brief',
-    body: 'Project-specific handoff text for an AI coding agent or for returning later yourself.',
+    body: 'Project-specific context for another person, an automation, or future-you.',
+  },
+  settings: {
+    title: 'Project settings',
+    body: 'Project-owned metadata such as deployed URL mapping. Scanner facts remain read-only.',
   },
 };
 
@@ -549,21 +616,34 @@ const isRecentlyChanged = (project) => {
 const signalSort = (a, b) => {
   const severityDelta = (riskSeverityRank[b.severity] ?? 0) - (riskSeverityRank[a.severity] ?? 0);
   if (severityDelta) return severityDelta;
-  const order = { risk: 0, setup: 1, dirty: 2, drift: 3 };
+  const order = { risk: 0, agent: 1, setup: 2, dirty: 3, drift: 4 };
   return (order[a.kind] ?? 9) - (order[b.kind] ?? 9);
 };
 
 const createBriefSignalItems = (projects, driftMap = {}) => projects.flatMap((project) => {
-  const setupItems = readinessSummary(project.aiReadiness).failed.map((check) => ({
-    id: `${project.id}-setup-${check.id}`,
+  const setupItems = readinessSummary(project.aiReadiness).failed
+    .filter((check) => check.id !== 'agent_context')
+    .map((check) => ({
+      id: `${project.id}-setup-${check.id}`,
+      project,
+      kind: 'setup',
+      severity: 'medium',
+      title: check.label,
+      detail: check.evidence?.length ? `Evidence: ${check.evidence.join(', ')}` : 'Missing from latest workspace scan.',
+      why: 'Shown because this setup signal is missing from the scanner checklist.',
+      tab: 'signals',
+    }));
+  const agentContext = agentContextSummary(project);
+  const agentItems = !agentContext.hasInstructions ? [{
+    id: `${project.id}-agent-context`,
     project,
-    kind: 'setup',
+    kind: 'agent',
     severity: 'medium',
-    title: check.label,
-    detail: check.evidence?.length ? `Evidence: ${check.evidence.join(', ')}` : 'Missing from latest workspace scan.',
-    why: 'Shown because this setup signal is missing from the scanner checklist.',
+    title: 'No agent instructions',
+    detail: 'Agents will enter this repo without project-specific rules, architecture notes, test expectations, or safe-change boundaries.',
+    why: 'Without agent instructions, a coding agent has to infer conventions from the repo, increasing the chance of wrong commands, misplaced files, skipped tests, or changes that violate local patterns.',
     tab: 'signals',
-  }));
+  }] : [];
   const riskItems = (project.risks ?? []).map((risk, index) => ({
     id: `${project.id}-risk-${risk.id}-${index}`,
     project,
@@ -595,7 +675,7 @@ const createBriefSignalItems = (projects, driftMap = {}) => projects.flatMap((pr
     why: driftWhyShown(drift),
     tab: 'drift',
   }));
-  return [...riskItems, ...setupItems, ...dirtyItems, ...driftItems];
+  return [...riskItems, ...agentItems, ...setupItems, ...dirtyItems, ...driftItems];
 }).sort(signalSort);
 
 const splitList = (value) => value
@@ -630,6 +710,72 @@ const readProjectStates = () => {
   try {
     const saved = JSON.parse(localStorage.getItem(PROJECT_STATES_STORAGE_KEY) ?? '{}');
     return saved && typeof saved === 'object' && !Array.isArray(saved) ? saved : {};
+  } catch {
+    return {};
+  }
+};
+
+const normalizeLiveEnvironment = (environment) => (
+  LIVE_ENVIRONMENT_OPTIONS.some((option) => option.value === environment) ? environment : 'production'
+);
+
+const normalizeLiveProvider = (provider) => (
+  LIVE_PROVIDER_OPTIONS.some((option) => option.value === provider) ? provider : 'other'
+);
+
+const normalizeLiveChecklist = (checklist = {}) => Object.fromEntries(
+  LIVE_CHECKLIST_ITEMS.map((item) => [item.id, Boolean(checklist?.[item.id])]),
+);
+
+const normalizeLiveScan = (scan) => {
+  if (!scan || typeof scan !== 'object') return null;
+  const checks = scan.checks && typeof scan.checks === 'object' ? scan.checks : {};
+  return {
+    url: scan.url || '',
+    finalUrl: scan.finalUrl || scan.url || '',
+    status: scan.status ?? null,
+    checkedAt: scan.checkedAt || new Date().toISOString(),
+    error: scan.error || '',
+    checks: Object.fromEntries(LIVE_CHECKLIST_ITEMS.map((item) => {
+      const check = checks[item.id] ?? {};
+      return [item.id, {
+        passed: Boolean(check.passed),
+        detail: check.detail || item.detail,
+        evidence: check.evidence || '',
+      }];
+    })),
+  };
+};
+
+const normalizeLiveUrl = (value) => {
+  const trimmed = String(value ?? '').trim();
+  if (!trimmed) return '';
+  const withProtocol = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+  try {
+    const url = new URL(withProtocol);
+    if (!['http:', 'https:'].includes(url.protocol)) return '';
+    return url.toString();
+  } catch {
+    return '';
+  }
+};
+
+const readProjectLiveLinks = () => {
+  try {
+    const saved = JSON.parse(localStorage.getItem(PROJECT_LIVE_LINKS_STORAGE_KEY) ?? '{}');
+    if (!saved || typeof saved !== 'object' || Array.isArray(saved)) return {};
+    return Object.fromEntries(Object.entries(saved).flatMap(([projectId, link]) => {
+      const url = normalizeLiveUrl(link?.url);
+      if (!url) return [];
+      return [[projectId, {
+        url,
+        environment: normalizeLiveEnvironment(link?.environment),
+        provider: normalizeLiveProvider(link?.provider),
+        checklist: normalizeLiveChecklist(link?.checklist),
+        scan: normalizeLiveScan(link?.scan),
+        updatedAt: link?.updatedAt || new Date().toISOString(),
+      }]];
+    }));
   } catch {
     return {};
   }
@@ -941,7 +1087,11 @@ const browserProjectsFromFileList = async (fileList) => {
   };
 };
 
-const normalizeProjectState = (state) => (PROJECT_STATE_LABELS[state] ? state : 'candidate');
+const normalizeProjectState = (state) => {
+  if (state === 'reference') return 'tracked';
+  if (PROJECT_STATE_LABELS[state]) return state;
+  return 'candidate';
+};
 
 const applyProjectState = (project, savedStates = {}) => {
   if (project.source === 'manual') {
@@ -995,6 +1145,12 @@ const normalizeRuntimeStatus = (runtimeStatus) => {
   return { ...runtimeStatus, ports };
 };
 
+const isRuntimeStatusStale = (runtimeStatus) => {
+  if (runtimeStatus?.state !== 'running') return false;
+  const checkedAt = runtimeStatus.checkedAt ? new Date(runtimeStatus.checkedAt).getTime() : NaN;
+  return !Number.isFinite(checkedAt) || Date.now() - checkedAt > RUNTIME_STATUS_FRESH_MS;
+};
+
 const primaryRuntimePort = (runtimeStatus) => normalizeRuntimeStatus(runtimeStatus)?.ports?.[0] ?? null;
 
 const runtimePortLabel = (port) => {
@@ -1045,18 +1201,42 @@ const runtimeStatusDetail = (runtimeStatus) => {
     ].filter(Boolean).join('\n');
   }
   if (normalized.state === 'unknown') {
+    if (isRuntimeStatusStale(runtimeStatus) && (runtimeStatus.ports ?? []).some(isUsableRuntimePort)) {
+      return [
+        'Aperture matched this project to a localhost process in the last scan, but runtime evidence expires after five minutes.',
+        'Rescan while the dev server is running to confirm the current port and pid.',
+        'Detection works best when the server is started from the project root.',
+      ].join('\n');
+    }
     return normalized.detail || 'Aperture could not inspect listening localhost ports during the last scan.';
   }
   return normalized.detail || 'No matching listening localhost port was found during the last scan.';
 };
 
-const RuntimeStatusIndicator = ({ runtimeStatus, align = 'left', compact = false }) => {
+const runtimeStatusCompactDetail = (runtimeStatus) => {
+  const normalized = normalizeRuntimeStatus(runtimeStatus);
+  const primary = primaryRuntimePort(normalized);
+  if (normalized?.state === 'running' && primary) {
+    return `Matched ${runtimePortLabel(primary)} in the latest scan.`;
+  }
+  if (normalized?.state === 'unknown' && isRuntimeStatusStale(runtimeStatus) && (runtimeStatus.ports ?? []).some(isUsableRuntimePort)) {
+    return 'Last runtime match is stale. Rescan while the dev server is running from this project folder.';
+  }
+  if (normalized?.state === 'unknown') {
+    return 'Runtime needs a fresh workspace scan.';
+  }
+  return 'No matching localhost process was found in the latest scan.';
+};
+
+const RuntimeStatusIndicator = ({ runtimeStatus, align = 'left', compact = false, onRefreshScan, refreshStatus }) => {
   const normalized = normalizeRuntimeStatus(runtimeStatus);
   const primary = primaryRuntimePort(normalized);
   const lastDetectedPrimary = (runtimeStatus?.ports ?? []).filter(isUsableRuntimePort)[0] ?? null;
   const actionPort = primary ?? lastDetectedPrimary;
   const actionUrl = runtimePortUrl(actionPort);
   const isRunning = normalized?.state === 'running' && primary;
+  const canRefresh = typeof onRefreshScan === 'function';
+  const isRefreshing = refreshStatus === 'refreshing';
   const state = !normalized?.state || normalized.state === 'unknown' ? 'unknown' : isRunning ? 'running' : 'stopped';
   const actionLabel = isRunning
     ? `Open ${runtimePortLabel(actionPort)}`
@@ -1079,7 +1259,7 @@ const RuntimeStatusIndicator = ({ runtimeStatus, align = 'left', compact = false
         <Radio size={compact ? 13 : 15} />
         {!compact && <span>{runtimeStatusLabel(normalized)}</span>}
       </TriggerTag>
-      <span className={`runtime-status__panel ${align === 'right' ? 'runtime-status__panel--right' : ''}`}>
+      <span className={`runtime-status__panel ${compact ? 'runtime-status__panel--compact' : ''} ${align === 'right' ? 'runtime-status__panel--right' : ''}`}>
         <strong>{runtimeStatusLabel(normalized)}</strong>
         {actionUrl ? (
           <>
@@ -1087,11 +1267,25 @@ const RuntimeStatusIndicator = ({ runtimeStatus, align = 'left', compact = false
               {isRunning ? actionUrl : `Open last detected ${runtimePortLabel(actionPort)}`}
               <ExternalLink size={13} />
             </a>
-            <span>{createLineBreaks(runtimeStatusDetail(normalized))}</span>
-            {!isRunning && <em className="runtime-status__hint">If this does not load, refresh the workspace scan.</em>}
+            <span>{createLineBreaks(compact ? runtimeStatusCompactDetail(runtimeStatus) : runtimeStatusDetail(runtimeStatus))}</span>
+            {!compact && !isRunning && <em className="runtime-status__hint">If this does not load, rescan while the dev server is running from this project folder.</em>}
+            {canRefresh && (
+              <button type="button" className="runtime-status__refresh" onClick={onRefreshScan} disabled={isRefreshing}>
+                <RefreshCw size={12} />
+                {isRefreshing ? 'Rescanning' : 'Rescan runtime'}
+              </button>
+            )}
           </>
         ) : (
-          <span>{createLineBreaks(runtimeStatusDetail(normalized))}</span>
+          <>
+            <span>{createLineBreaks(compact ? runtimeStatusCompactDetail(runtimeStatus) : runtimeStatusDetail(runtimeStatus))}</span>
+            {canRefresh && (
+              <button type="button" className="runtime-status__refresh" onClick={onRefreshScan} disabled={isRefreshing}>
+                <RefreshCw size={12} />
+                {isRefreshing ? 'Rescanning' : 'Rescan runtime'}
+              </button>
+            )}
+          </>
         )}
       </span>
     </span>
@@ -1260,45 +1454,6 @@ const InfoPopover = ({ title, body, align = 'left', kind = 'question', stopClick
   </span>
   );
 };
-
-const riskBreakdown = (projects) => {
-  const counts = projects
-    .flatMap((project) => project.risks ?? [])
-    .reduce((current, risk) => {
-      const category = riskCategory(risk);
-      return { ...current, [category]: (current[category] ?? 0) + 1 };
-    }, {});
-  const entries = Object.entries(counts);
-  return entries.length ? entries.map(([category, count]) => `${count} ${category.toLowerCase()}`).join(', ') : `No hygiene findings from ${SCANNER_CHECK_SCOPE}`;
-};
-
-const driftBreakdown = (projects, driftMap) => {
-  const counts = projects
-    .flatMap((project) => driftMap[project.id] ?? [])
-    .reduce((current, drift) => ({ ...current, [drift.category]: (current[drift.category] ?? 0) + 1 }), {});
-  const entries = Object.entries(counts);
-  return entries.length ? entries.map(([category, count]) => `${count} ${category.toLowerCase()}`).join(', ') : 'No reference differences detected';
-};
-
-const statBreakdown = (projects, driftMap) => {
-  const dirtyCount = projects.filter((project) => project.git?.dirty).length;
-  const avgReadiness = projects.length
-    ? Math.round(projects.reduce((sum, project) => sum + (project.aiReadiness?.score ?? 0), 0) / projects.length)
-    : 0;
-  const readinessGaps = projects.reduce((sum, project) => sum + readinessSummary(project.aiReadiness).failed.length, 0);
-  return {
-    projects: projects.length ? `${projects.length} local project${projects.length === 1 ? '' : 's'} mapped` : 'No projects mapped yet',
-    readiness: `${avgReadiness}% average, ${readinessGaps} setup gap${readinessGaps === 1 ? '' : 's'}`,
-    risks: riskBreakdown(projects),
-    dirty: dirtyCount ? `${dirtyCount} project${dirtyCount === 1 ? '' : 's'} with uncommitted changes` : 'All detected Git worktrees appear clean',
-    drift: driftBreakdown(projects, driftMap),
-  };
-};
-
-const setupReadinessHelp = (avgReadiness) => ({
-  title: 'Setup readiness',
-  body: `Average setup coverage across mapped projects: ${avgReadiness}%.\nThis looks for basics that make a project easier to pick up, such as README, scripts, env examples, CI, and handoff context.`,
-});
 
 const ThemePreviewShape = ({ shape }) => {
   switch (shape) {
@@ -1491,7 +1646,7 @@ const BriefMetricButton = ({ icon: Icon, label, value, detail, onClick }) => (
   </button>
 );
 
-const CopyableHandoff = ({ text, label = 'handoff text' }) => {
+const CopyableHandoff = ({ text, label = 'brief text' }) => {
   const [copied, setCopied] = useState(false);
   const copyText = async () => {
     try {
@@ -1514,26 +1669,69 @@ const CopyableHandoff = ({ text, label = 'handoff text' }) => {
   );
 };
 
-const WorkspaceDashboardCard = ({ eyebrow, title, summary, detail, icon: Icon, tone = 'info', help, onClick }) => {
-  const Element = onClick ? 'button' : 'article';
+const CopyStarterAgentsButton = ({ className = '' }) => {
+  const [copied, setCopied] = useState(false);
+  const copyStarter = async () => {
+    try {
+      await navigator.clipboard.writeText(STARTER_AGENTS_MD);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1800);
+    } catch {
+      setCopied(false);
+    }
+  };
   return (
-    <Element
-      type={onClick ? 'button' : undefined}
-      className={`workspace-card workspace-card--${tone} ${onClick ? 'workspace-card--button' : ''}`}
-      onClick={onClick}
-    >
-      <span className="workspace-card__icon" aria-hidden="true"><Icon size={34} /></span>
-      <span className="workspace-card__copy">
-        <span className="workspace-card__eyebrow">
-          {eyebrow}
-          {help && <InfoPopover {...help} align="right" stopClick={false} />}
-        </span>
-        <strong>{title}</strong>
-        <span>{summary}</span>
-      </span>
-      {detail && <small>{detail}</small>}
-      {onClick && <ChevronRight size={18} />}
-    </Element>
+    <button type="button" className={`copy-starter-agents ${className}`} onClick={copyStarter}>
+      <Copy size={15} /> {copied ? 'Copied starter' : 'Copy starter AGENTS.md'}
+    </button>
+  );
+};
+
+const ProjectSignalLine = ({ tone = 'info', icon: Icon, eyebrow, title, detail, meta, side }) => (
+  <div className={`project-drawer__signal-line project-drawer__signal-line--${tone}`}>
+    {Icon && <Icon size={16} className="project-drawer__signal-icon" />}
+    <div className="project-drawer__signal-copy">
+      {eyebrow && <div className="project-drawer__signal-eyebrow">{eyebrow}</div>}
+      <div className="project-drawer__drift-title">{title}</div>
+      {detail && <div className="project-drawer__drift-detail">{detail}</div>}
+      {meta && <div className="project-drawer__why">{meta}</div>}
+    </div>
+    {side && <div className="project-drawer__tag">{side}</div>}
+  </div>
+);
+
+const WorkspaceSignalStrip = ({ stats }) => {
+  const readinessTone = stats.avgReadiness >= 80 ? 'success' : stats.avgReadiness >= 55 ? 'warning' : 'danger';
+  const signals = [
+    { id: 'projects', label: 'Projects', value: stats.totalProjects, detail: 'mapped', icon: FolderOpen, tone: 'info' },
+    { id: 'setup', label: 'Ready', value: `${stats.avgReadiness}%`, detail: 'setup', icon: Cpu, tone: readinessTone },
+    { id: 'risks', label: 'Risks', value: stats.riskCount, detail: 'findings', icon: ShieldAlert, tone: stats.riskCount ? 'danger' : 'success' },
+    { id: 'dirty', label: 'Dirty', value: stats.dirtyCount, detail: 'worktrees', icon: GitBranch, tone: stats.dirtyCount ? 'warning' : 'success' },
+    { id: 'drift', label: 'Drift', value: stats.driftCount, detail: 'differences', icon: GitCompareArrows, tone: stats.driftCount ? 'warning' : 'success' },
+  ];
+
+  return (
+    <section className="workspace-signal-strip" aria-label="Workspace signals">
+      <div className="workspace-signal-strip__label">Workspace signals</div>
+      <div className="workspace-signal-strip__items">
+        {signals.map((signal) => {
+          const Icon = signal.icon;
+          return (
+            <div
+              key={signal.id}
+              className={`workspace-signal-mini workspace-signal-mini--${signal.tone}`}
+            >
+              <Icon size={17} />
+              <span>
+                <strong>{signal.value}</strong>
+                <small>{signal.label}</small>
+              </span>
+              <em>{signal.detail}</em>
+            </div>
+          );
+        })}
+      </div>
+    </section>
   );
 };
 
@@ -1575,118 +1773,6 @@ const SetupRequiredState = ({
   </section>
 );
 
-const WorkspaceView = ({
-  stats,
-  statSummaries,
-  workspaceRootLabel,
-  schemaVersion,
-  referenceProject,
-  hasKnownProjects,
-  onShowProjects,
-  onOpenBrief,
-  onOpenSettings,
-  onShowScannerHelp,
-  onAddManualProject,
-  glossaryHelp,
-}) => {
-  const openSignalCount = stats.signalCount ?? (stats.riskCount + stats.dirtyCount + stats.driftCount);
-  const readinessTone = stats.avgReadiness >= 80 ? 'success' : stats.avgReadiness >= 55 ? 'warning' : 'danger';
-  const scanSourceKind = workspaceRootLabel
-    ? workspaceRootLabel === 'Manual entries' ? 'Manual' : 'Local'
-    : 'None';
-  const schemaLabel = schemaVersion?.replace('aperture.scan.', '') ?? 'v1';
-  const workspaceLine = stats.totalProjects
-    ? 'Inventory, baseline, source, setup coverage, and scan provenance for this local workspace.'
-    : 'Create the local project map first, then track projects from scan evidence or manual entries.';
-  const signalSummary = [
-    `${stats.riskCount} risk`,
-    `${stats.dirtyCount} dirty`,
-    `${stats.driftCount} drift`,
-  ].join(' / ');
-
-  if (!stats.totalProjects) {
-    return (
-      <SetupRequiredState
-        eyebrow="Workspace"
-        title="No projects mapped yet"
-        detail={hasKnownProjects
-          ? 'Aperture found candidate projects, but none are currently tracked. Choose which projects belong in the workspace map.'
-          : 'Add at least one project before Workspace can show scan context, reference baseline, and setup coverage.'}
-        hasKnownProjects={hasKnownProjects}
-        onOpenSettings={onOpenSettings}
-        onShowScannerHelp={onShowScannerHelp}
-        onAddManualProject={onAddManualProject}
-      />
-    );
-  }
-
-  return (
-    <section className="workspace-overview">
-      <div className="workspace-overview__header">
-        <div>
-          <p>{workspaceLine}</p>
-        </div>
-        <div className="workspace-overview__score">
-          <span>{stats.totalProjects}</span>
-          <small>mapped projects</small>
-        </div>
-      </div>
-
-      <section className="workspace-card-grid" aria-label="Workspace snapshot">
-        <WorkspaceDashboardCard
-          eyebrow="Inventory"
-          title={statSummaries.projects}
-          summary="Tracked projects from the workspace map."
-          detail="Project map"
-          icon={FolderOpen}
-          tone="info"
-          help={{ title: 'Projects mapped', body: 'Projects currently shown from the latest workspace scan plus manual entries.' }}
-          onClick={onShowProjects}
-        />
-        <WorkspaceDashboardCard
-          eyebrow="Reference"
-          title={referenceProject?.name ?? 'No baseline'}
-          summary={referenceProject ? 'Comparison anchor for conventions and setup shape.' : 'Select a tracked project as the baseline.'}
-          detail="Baseline"
-          icon={Map}
-          tone={referenceProject ? 'info' : 'warning'}
-          help={{ title: 'Reference baseline', body: 'The baseline project used for advisory comparisons. Differences are facts, not failures.' }}
-          onClick={onShowProjects}
-        />
-        <WorkspaceDashboardCard
-          eyebrow="Source"
-          title={scanSourceKind}
-          summary={workspaceRootLabel || 'No scan source yet'}
-          detail={`Schema ${schemaLabel}`}
-          icon={Radio}
-          tone="success"
-          help={{ title: 'Scan source', body: `Workspace evidence boundary: ${workspaceRootLabel || 'No scan source yet'}.` }}
-        />
-        <WorkspaceDashboardCard
-          eyebrow="Readiness"
-          title={`${stats.avgReadiness}% coverage`}
-          summary={statSummaries.readiness}
-          detail="Setup checks"
-          icon={Cpu}
-          tone={readinessTone}
-          help={setupReadinessHelp(stats.avgReadiness)}
-          onClick={onShowProjects}
-        />
-        <WorkspaceDashboardCard
-          eyebrow="Workspace signals"
-          title={openSignalCount ? `${openSignalCount} open` : 'None open'}
-          summary={signalSummary}
-          detail="Brief queue"
-          icon={ShieldAlert}
-          tone={openSignalCount ? 'warning' : 'success'}
-          help={glossaryHelp}
-          onClick={() => onOpenBrief('priority')}
-        />
-      </section>
-    </section>
-  );
-};
-
 const BriefView = ({
   projects,
   signalItems,
@@ -1699,24 +1785,28 @@ const BriefView = ({
   onAddManualProject,
 }) => {
   const setupGapItems = signalItems.filter((item) => item.kind === 'setup');
+  const agentItems = signalItems.filter((item) => item.kind === 'agent');
   const riskItems = signalItems.filter((item) => item.kind === 'risk');
   const dirtyItems = signalItems.filter((item) => item.kind === 'dirty');
   const driftItems = signalItems.filter((item) => item.kind === 'drift');
   const setupGroups = groupedSetupGaps(setupGapItems);
   const highRiskItems = riskItems.filter((item) => ['critical', 'high'].includes(item.severity));
   const priorityItems = signalItems.slice(0, 10);
-  const activeFocus = ['priority', 'setup', 'risk', 'git', 'drift'].includes(focus) ? focus : 'priority';
+  const activeFocus = ['priority', 'agent', 'setup', 'risk', 'git', 'drift'].includes(focus) ? focus : 'priority';
   const filteredItems = activeFocus === 'priority'
     ? priorityItems
-    : activeFocus === 'setup'
-      ? setupGapItems
-      : activeFocus === 'risk'
-        ? riskItems
-        : activeFocus === 'git'
-          ? dirtyItems
-          : driftItems;
+    : activeFocus === 'agent'
+      ? agentItems
+      : activeFocus === 'setup'
+        ? setupGapItems
+        : activeFocus === 'risk'
+          ? riskItems
+          : activeFocus === 'git'
+            ? dirtyItems
+            : driftItems;
   const filters = [
     { id: 'priority', label: 'Priority', icon: AlertTriangle, count: priorityItems.length },
+    { id: 'agent', label: 'Agent', icon: FileJson, count: agentItems.length },
     { id: 'setup', label: 'Setup', icon: Cpu, count: setupGapItems.length },
     { id: 'risk', label: 'Risk', icon: ShieldAlert, count: riskItems.length },
     { id: 'git', label: 'Git', icon: GitBranch, count: dirtyItems.length },
@@ -1725,12 +1815,13 @@ const BriefView = ({
   const agentBriefLines = [
     `Start with ${priorityItems[0]?.project.name ?? 'the cleanest mapped project'}: ${priorityItems[0]?.title ?? 'no priority blockers surfaced'}.`,
     `${highRiskItems.length} high-priority finding${highRiskItems.length === 1 ? '' : 's'}; ${riskItems.length} total risk signal${riskItems.length === 1 ? '' : 's'} are not equally weighted.`,
-    setupGroups[0] ? `${setupGroups[0][1].length} project${setupGroups[0][1].length === 1 ? '' : 's'} share "${setupGroups[0][0]}".` : 'No repeated setup gap is blocking handoff.',
+    agentItems.length ? `${agentItems.length} project${agentItems.length === 1 ? '' : 's'} have no agent instructions; add local rules before assigning agent work.` : 'Agent instructions are present for mapped projects.',
+    setupGroups[0] ? `${setupGroups[0][1].length} project${setupGroups[0][1].length === 1 ? '' : 's'} share "${setupGroups[0][0]}".` : 'No repeated setup gap is blocking project setup.',
     dirtyItems.length ? `Review Git state for ${dirtyItems[0].project.name} first.` : 'No dirty worktrees need review.',
     driftItems.length ? 'Use reference differences as advisory context, not a launch blocker.' : 'No reference differences surfaced.',
   ];
   const agentBriefText = [
-    'Workspace handoff',
+    'Workspace brief',
     '',
     ...agentBriefLines,
   ].join('\n');
@@ -1758,10 +1849,6 @@ const BriefView = ({
     <section className="workspace-brief">
       <div className="workspace-brief__hero">
         <div className="workspace-brief__copy">
-          <div className="workspace-brief__marker">
-            <span />
-            <div className="section-kicker">Brief</div>
-          </div>
           <h2>What should happen next</h2>
           <p>Actionable setup, risk, Git, and reference signals translated into one cross-project queue.</p>
         </div>
@@ -1773,19 +1860,19 @@ const BriefView = ({
 
       <section className="brief-metrics" aria-label="Brief snapshot">
         <BriefMetric icon={FolderOpen} label="Mapped" value={projects.length} detail="projects" />
+        <BriefMetricButton icon={FileJson} label="Agent" value={agentItems.length} detail="missing" onClick={() => onOpenFocus('agent')} />
         <BriefMetricButton icon={Cpu} label="Setup" value={setupGapItems.length} detail="gaps" onClick={() => onOpenFocus('setup')} />
         <BriefMetricButton icon={ShieldAlert} label="Risk" value={highRiskItems.length} detail={`${riskItems.length} total`} onClick={() => onOpenFocus('risk')} />
         <BriefMetricButton icon={GitBranch} label="Git" value={dirtyItems.length} detail="dirty" onClick={() => onOpenFocus('git')} />
-        <BriefMetricButton icon={GitCompareArrows} label="Drift" value={driftItems.length} detail="diffs" onClick={() => onOpenFocus('drift')} />
       </section>
 
       <section className="brief-moments" aria-label="Brief highlights">
         <BriefMoment
-          eyebrow="First move"
-          title={setupGroups[0]?.[0] || 'Workspace is structurally ready'}
-          copy={setupGroups[0] ? `${setupGroups[0][1].length} project${setupGroups[0][1].length === 1 ? '' : 's'} need this before handoff feels reliable.` : 'No recurring setup gap is blocking agent handoff across mapped projects.'}
-          icon={Cpu}
-          tone="info"
+          eyebrow="Agent context"
+          title={agentItems.length ? `${agentItems.length} project${agentItems.length === 1 ? '' : 's'} have no agent instructions` : 'Agent instructions present'}
+          copy={agentItems.length ? 'Agents will enter these repos without local rules or workflow expectations.' : 'Mapped projects have project-specific guidance for agent work.'}
+          icon={FileJson}
+          tone={agentItems.length ? 'warning' : 'success'}
         />
         <BriefMoment
           eyebrow="Launch pressure"
@@ -1830,14 +1917,19 @@ const BriefView = ({
             <BriefItemButton key={item.id} item={item} onSelectProject={onSelectProject} />
           )) : <div className="brief-empty"><CheckCircle2 size={18} /> No signals in this filter.</div>}
         </div>
+        {agentItems.length > 0 && activeFocus === 'agent' && (
+          <div className="brief-agent-actions">
+            <CopyStarterAgentsButton />
+          </div>
+        )}
       </section>
 
       <section className="brief-panel brief-panel--handoff">
         <div className="brief-panel__heading">
-          <h3><FileJson size={15} /> Agent Handoff</h3>
+          <h3><FileJson size={15} /> Workspace Brief</h3>
           <span>Summary</span>
         </div>
-        <CopyableHandoff text={agentBriefText} label="handoff" />
+        <CopyableHandoff text={agentBriefText} label="brief" />
       </section>
     </section>
   );
@@ -2115,6 +2207,656 @@ const EmptyState = ({ onAddManualProject, onShowScannerHelp }) => {
   );
 };
 
+const liveOptionLabel = (options, value) => options.find((option) => option.value === value)?.label ?? 'Other';
+
+const projectLiveUrl = (project, liveLinks = {}) => liveLinks[project.id]?.url ?? '';
+
+const liveProjectStatus = (project) => {
+  const launchRisk = launchHygieneRisks(project)[0];
+  const topRisk = launchRisk ?? topRiskFinding(project.risks ?? []);
+  const setup = readinessSummary(project.aiReadiness);
+  const setupGap = setup.failed[0];
+  if (topRisk) {
+    return {
+      tone: severityTones[topRisk.severity] || 'warning',
+      title: topRisk.title,
+      detail: topRisk.detail,
+      label: topRisk.severity ?? 'review',
+      tab: 'signals',
+      icon: ShieldAlert,
+    };
+  }
+  if (project.git?.dirty) {
+    return {
+      tone: 'warning',
+      title: 'Local worktree has uncommitted changes',
+      detail: 'Check whether the live surface is ahead of or behind local work before sharing.',
+      label: 'dirty',
+      tab: 'overview',
+      icon: GitBranch,
+    };
+  }
+  if (setupGap) {
+    return {
+      tone: 'info',
+      title: setupGap.label,
+      detail: 'Setup context is incomplete for this project.',
+      label: 'setup',
+      tab: 'signals',
+      icon: Cpu,
+    };
+  }
+  return {
+    tone: 'success',
+    title: 'No local launch blockers in the current scan',
+    detail: 'Aperture is not seeing setup, hygiene, or worktree issues for this mapped project.',
+    label: 'steady',
+    tab: 'overview',
+    icon: CheckCircle2,
+  };
+};
+
+const hasLiveAttention = (project) => {
+  const status = liveProjectStatus(project);
+  return status.tone !== 'success';
+};
+
+const liveMetricsSummary = (project, liveLink) => {
+  const connected = Boolean(liveLink?.url);
+  const scan = normalizeLiveScan(liveLink?.scan);
+  const checklist = scan
+    ? Object.fromEntries(LIVE_CHECKLIST_ITEMS.map((item) => [item.id, Boolean(scan.checks?.[item.id]?.passed)]))
+    : normalizeLiveChecklist(liveLink?.checklist);
+  const checklistCompleted = Object.values(checklist).filter(Boolean).length;
+  const missingChecklistItems = LIVE_CHECKLIST_ITEMS.filter((item) => !checklist[item.id]);
+  const setup = readinessSummary(project.aiReadiness);
+  const setupScore = project.aiReadiness?.score ?? 0;
+  const launchRisks = launchHygieneRisks(project);
+  const topRisk = launchRisks[0] ?? topRiskFinding(project.risks ?? []);
+  const runtime = normalizeRuntimeStatus(project.runtimeStatus);
+  const runtimeRunning = runtime?.state === 'running' && Boolean(primaryRuntimePort(runtime));
+  const gitDirty = Boolean(project.git?.dirty);
+  const providerKnown = connected && liveLink.provider && liveLink.provider !== 'other';
+  const score = Math.min(100, Math.round(
+    (connected ? 25 : 0)
+    + (providerKnown ? 10 : 0)
+    + (launchRisks.length ? 0 : 25)
+    + Math.min(20, setupScore * 0.2)
+    + (gitDirty ? 0 : 10)
+    + (runtimeRunning ? 10 : 0),
+  ));
+  const gaps = [
+    !connected ? 'No URL attached' : null,
+    connected && !providerKnown ? 'Provider unknown' : null,
+    launchRisks.length ? `${launchRisks.length} launch finding${launchRisks.length === 1 ? '' : 's'}` : null,
+    setup.failed.length ? setup.label : null,
+    gitDirty ? 'Dirty worktree' : null,
+    !runtimeRunning ? 'Local runtime not running' : null,
+  ].filter(Boolean);
+
+  return {
+    score,
+    gaps,
+    setup,
+    topRisk,
+    runtimeRunning,
+    gitDirty,
+    providerKnown,
+    checklist: {
+      values: checklist,
+      completed: checklistCompleted,
+      total: LIVE_CHECKLIST_ITEMS.length,
+      missing: missingChecklistItems.length,
+      missingItems: missingChecklistItems,
+    },
+  };
+};
+
+const ProjectLiveSettings = ({ project, liveLink, onSaveLiveLink, onClearLiveLink, onToggleLiveChecklist, focusOnOpen = false }) => {
+  const [draft, setDraft] = useState({
+    url: liveLink?.url ?? '',
+    environment: liveLink?.environment ?? 'production',
+    provider: liveLink?.provider ?? 'other',
+  });
+  const [status, setStatus] = useState('idle');
+  const urlInputRef = useRef(null);
+
+  useEffect(() => {
+    setDraft({
+      url: liveLink?.url ?? '',
+      environment: liveLink?.environment ?? 'production',
+      provider: liveLink?.provider ?? 'other',
+    });
+    setStatus('idle');
+  }, [liveLink?.url, liveLink?.environment, liveLink?.provider, project.id]);
+
+  useEffect(() => {
+    if (focusOnOpen) {
+      window.requestAnimationFrame(() => urlInputRef.current?.focus());
+    }
+  }, [focusOnOpen, project.id]);
+
+  const normalizedUrl = normalizeLiveUrl(draft.url);
+  const hasExistingUrl = Boolean(liveLink?.url);
+  const canSave = Boolean(normalizedUrl);
+
+  const save = (event) => {
+    event.preventDefault();
+    if (!canSave) {
+      setStatus('invalid');
+      return;
+    }
+    onSaveLiveLink(project.id, {
+      url: normalizedUrl,
+      environment: normalizeLiveEnvironment(draft.environment),
+      provider: normalizeLiveProvider(draft.provider),
+    });
+    setDraft((current) => ({ ...current, url: normalizedUrl }));
+    setStatus('saved');
+  };
+
+  const clear = () => {
+    onClearLiveLink(project.id);
+    setDraft((current) => ({ ...current, url: '' }));
+    setStatus('cleared');
+  };
+
+  return (
+    <section className="project-drawer__panel project-live-settings">
+      <div className="project-drawer__section-heading">
+        <h3><Link size={14} /> Live Surface</h3>
+        <span>{hasExistingUrl ? liveOptionLabel(LIVE_ENVIRONMENT_OPTIONS, liveLink.environment) : 'Not connected'}</span>
+      </div>
+      <form className="project-live-settings__form" onSubmit={save}>
+        <label className="manual-field">
+          <span>Primary live URL</span>
+          <input
+            ref={urlInputRef}
+            value={draft.url}
+            onChange={(event) => {
+              setDraft((current) => ({ ...current, url: event.target.value }));
+              setStatus('idle');
+            }}
+            placeholder="https://example.com"
+          />
+        </label>
+        <div className="project-live-settings__selectors">
+          <label className="manual-field">
+            <span>Environment</span>
+            <select value={draft.environment} onChange={(event) => setDraft((current) => ({ ...current, environment: event.target.value }))}>
+              {LIVE_ENVIRONMENT_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </select>
+          </label>
+          <label className="manual-field">
+            <span>Provider</span>
+            <select value={draft.provider} onChange={(event) => setDraft((current) => ({ ...current, provider: event.target.value }))}>
+              {LIVE_PROVIDER_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </select>
+          </label>
+        </div>
+        {hasExistingUrl && (
+          <div className="project-live-checklist project-live-checklist--settings" aria-label={`${project.name} live checklist`}>
+            {LIVE_CHECKLIST_ITEMS.map((item) => (
+              <label key={item.id} className="project-live-checklist__item">
+                <input
+                  type="checkbox"
+                  checked={Boolean(liveLink?.checklist?.[item.id])}
+                  onChange={(event) => onToggleLiveChecklist(project.id, item.id, event.target.checked)}
+                />
+                <span>
+                  <strong>{item.label}</strong>
+                  <small>{item.detail}</small>
+                </span>
+              </label>
+            ))}
+          </div>
+        )}
+        <div className="project-live-settings__actions">
+          <button type="submit" className="manual-submit" disabled={!draft.url.trim()}>
+            <Save size={16} /> Save Live URL
+          </button>
+          {hasExistingUrl && (
+            <>
+              <a className="project-live-settings__open" href={liveLink.url} target="_blank" rel="noreferrer">
+                <ExternalLink size={15} /> Open live
+              </a>
+              <button type="button" className="project-live-settings__clear" onClick={clear}>
+                <X size={15} /> Clear
+              </button>
+            </>
+          )}
+        </div>
+        {status === 'invalid' && <div className="project-live-settings__status is-error">Enter a valid http or https URL.</div>}
+        {status === 'saved' && <div className="project-live-settings__status">Live surface saved for {project.name}.</div>}
+        {status === 'cleared' && <div className="project-live-settings__status">Live surface removed.</div>}
+      </form>
+    </section>
+  );
+};
+
+const LiveProjectRow = ({ project, liveLink, selected, onSelect, onOpenProject, onAttachUrl }) => {
+  const connected = Boolean(liveLink?.url);
+  const metrics = liveMetricsSummary(project, liveLink);
+  const status = connected && metrics.checklist.missing ? {
+    tone: 'warning',
+    title: `${metrics.checklist.missing} live checklist gap${metrics.checklist.missing === 1 ? '' : 's'}`,
+    detail: `${metrics.checklist.missingItems.map((item) => item.label).join(', ')} still need review.`,
+    label: 'checklist',
+    tab: 'settings',
+    icon: AlertTriangle,
+  } : connected ? liveProjectStatus(project) : {
+    tone: 'info',
+    title: 'No deployed URL attached',
+    detail: 'Connect the production, staging, or preview URL to track this local project as a live surface.',
+    label: 'connect',
+    tab: 'settings',
+    icon: Link,
+  };
+  const StatusIcon = status.icon;
+  const host = connected ? new URL(liveLink.url).host : 'Not connected';
+  const lastActivity = sourceActivityDate(project);
+  const provider = connected ? liveOptionLabel(LIVE_PROVIDER_OPTIONS, liveLink.provider) : 'No provider';
+  const environment = connected ? liveOptionLabel(LIVE_ENVIRONMENT_OPTIONS, liveLink.environment) : 'Local only';
+  const runtimeLabel = metrics.runtimeRunning ? runtimeStatusLabel(project.runtimeStatus) : 'Not running';
+  const readinessLabel = metrics.gaps.length ? `${metrics.gaps.length} tracked gap${metrics.gaps.length === 1 ? '' : 's'}` : 'Live signals steady';
+  return (
+    <article
+      className={`live-project-row ${connected ? 'is-connected' : ''} ${selected ? 'is-selected' : ''} live-project-row--${status.tone}`}
+      onClick={() => onSelect(project)}
+      onKeyDown={(event) => openCardFromKeyboard(event, project, onSelect)}
+      role="button"
+      tabIndex={0}
+      aria-label={`Select ${project.name} live state`}
+    >
+      <div className="live-project-row__topline">
+        <span className="live-project-row__eyebrow">{environment}</span>
+        <span className={`live-project-row__state live-project-row__state--${metrics.score >= 80 ? 'good' : metrics.score >= 50 ? 'watch' : 'risk'}`}>
+          {readinessLabel}
+        </span>
+      </div>
+
+      <div className="live-project-row__hero">
+        <div className="live-project-row__identity">
+          <h3>{project.name}</h3>
+          <p>{project.path}</p>
+        </div>
+        <div className="live-project-row__score" aria-label={`${metrics.score}% live ready`}>
+          <span>{metrics.score}<small>%</small></span>
+          <em>live ready</em>
+        </div>
+      </div>
+
+      <div className="live-project-row__facts">
+        <div>
+          <span>Surface</span>
+          <strong>{host}</strong>
+        </div>
+        <div>
+          <span>Provider</span>
+          <strong>{provider}</strong>
+        </div>
+        <div>
+          <span>Local</span>
+          <strong>{runtimeLabel}</strong>
+        </div>
+        <div>
+          <span>Updated</span>
+          <strong>{formatDate(lastActivity)}</strong>
+        </div>
+        <span className="live-project-row__meter"><i style={{ width: `${Math.max(5, metrics.score)}%` }} /></span>
+      </div>
+
+      <div className="live-project-row__signal">
+        <StatusIcon size={16} />
+        <span>
+          <strong>{status.title}</strong>
+          <small>{status.detail}</small>
+        </span>
+      </div>
+
+      <div className="live-project-row__actions">
+        {connected ? (
+          <a href={liveLink.url} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>
+            <ExternalLink size={15} /> Open live
+          </a>
+        ) : (
+          <button type="button" onClick={(event) => { event.stopPropagation(); onAttachUrl(project); }}>
+            <Link size={15} /> Attach URL
+          </button>
+        )}
+        <button type="button" onClick={(event) => { event.stopPropagation(); onOpenProject(project, connected ? status.tab : 'settings'); }}>
+          <FolderOpen size={15} /> Project
+        </button>
+      </div>
+    </article>
+  );
+};
+
+const LiveStateSidebar = ({ project, liveLink, onOpenProject, onAttachUrl, onToggleLiveChecklist }) => {
+  if (!project) {
+    return (
+      <aside className="live-state-sidebar">
+        <div className="live-state-sidebar__empty">
+          <Link size={20} />
+          <strong>Select a project</strong>
+          <span>Live checklist details appear here.</span>
+        </div>
+      </aside>
+    );
+  }
+
+  const connected = Boolean(liveLink?.url);
+  const metrics = liveMetricsSummary(project, liveLink);
+  const host = connected ? new URL(liveLink.url).host : 'No URL attached';
+  const missingItems = connected ? metrics.checklist.missingItems : LIVE_CHECKLIST_ITEMS;
+
+  return (
+    <aside className="live-state-sidebar" aria-label={`${project.name} live state`}>
+      <div className="live-state-sidebar__header">
+        <span>{connected ? liveOptionLabel(LIVE_ENVIRONMENT_OPTIONS, liveLink.environment) : 'Local only'}</span>
+        <h3>{project.name}</h3>
+        <a href={connected ? liveLink.url : undefined} target="_blank" rel="noreferrer" aria-disabled={!connected} onClick={(event) => { if (!connected) event.preventDefault(); }}>
+          <ExternalLink size={14} /> {host}
+        </a>
+      </div>
+
+      <div className="live-state-sidebar__score">
+        <strong>{metrics.checklist.completed}/{metrics.checklist.total}</strong>
+        <span>live checks complete</span>
+      </div>
+
+      <section className="live-state-sidebar__section">
+        <h4>Live Checklist</h4>
+        {connected && (
+          <div className={`live-scan-status ${liveLink.scan?.error ? 'is-error' : ''}`}>
+            {liveLink.scan?.checkedAt
+              ? `Auto-scanned ${formatDate(liveLink.scan.checkedAt)}${liveLink.scan.status ? ` · HTTP ${liveLink.scan.status}` : ''}`
+              : 'Auto-scan will run for this URL.'}
+            {liveLink.scan?.error ? ` ${liveLink.scan.error}` : ''}
+          </div>
+        )}
+        <div className="project-live-checklist project-live-checklist--sidebar">
+          {LIVE_CHECKLIST_ITEMS.map((item) => (
+            <label key={item.id} className="project-live-checklist__item">
+              <input
+                type="checkbox"
+                checked={Boolean(metrics.checklist.values?.[item.id])}
+                disabled
+                onChange={(event) => onToggleLiveChecklist(project.id, item.id, event.target.checked)}
+              />
+              <span>
+                <strong>{item.label}</strong>
+                <small>{liveLink?.scan?.checks?.[item.id]?.detail || item.detail}</small>
+                {liveLink?.scan?.checks?.[item.id]?.evidence && <em>{liveLink.scan.checks[item.id].evidence}</em>}
+              </span>
+            </label>
+          ))}
+        </div>
+      </section>
+
+      <section className="live-state-sidebar__section">
+        <h4>Why It Matters</h4>
+        <div className="live-state-sidebar__consequences">
+          {missingItems.length ? missingItems.map((item) => (
+            <div key={item.id}>
+              <strong>{item.label}</strong>
+              <span>{item.detail}</span>
+            </div>
+          )) : (
+            <div>
+              <strong>Live basics are covered</strong>
+              <span>Favicon, OG card, and SEO readiness are marked complete for this surface.</span>
+            </div>
+          )}
+        </div>
+      </section>
+
+      <div className="live-state-sidebar__actions">
+        {connected ? (
+          <a href={liveLink.url} target="_blank" rel="noreferrer">
+            <ExternalLink size={15} /> Open live
+          </a>
+        ) : (
+          <button type="button" onClick={() => onAttachUrl(project)}>
+            <Link size={15} /> Attach URL
+          </button>
+        )}
+        <button type="button" onClick={() => onOpenProject(project, 'settings')}>
+          <Settings size={15} /> Project settings
+        </button>
+      </div>
+    </aside>
+  );
+};
+
+const LiveView = ({ projects, liveLinks, onOpenProject, onAttachUrl, onToggleLiveChecklist, onApplyLiveScan, hasKnownProjects, onOpenSettings, onShowScannerHelp, onAddManualProject }) => {
+  const connectedProjects = projects.filter((project) => projectLiveUrl(project, liveLinks));
+  const unconnectedProjects = projects.filter((project) => !projectLiveUrl(project, liveLinks));
+  const [selectedProjectId, setSelectedProjectId] = useState(() => connectedProjects[0]?.id ?? projects[0]?.id ?? '');
+  useEffect(() => {
+    if (!projects.length) {
+      setSelectedProjectId('');
+      return;
+    }
+    if (!projects.some((project) => project.id === selectedProjectId)) {
+      setSelectedProjectId(connectedProjects[0]?.id ?? projects[0]?.id ?? '');
+    }
+  }, [connectedProjects, projects, selectedProjectId]);
+  useEffect(() => {
+    let cancelled = false;
+    const staleAfterMs = 1000 * 60 * 60 * 12;
+    connectedProjects.forEach((project) => {
+      const liveLink = liveLinks[project.id];
+      const checkedAt = liveLink?.scan?.checkedAt ? new Date(liveLink.scan.checkedAt).getTime() : 0;
+      if (!liveLink?.url || (Number.isFinite(checkedAt) && Date.now() - checkedAt < staleAfterMs)) return;
+      fetch('/api/live-check', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ url: liveLink.url }),
+      })
+        .then(async (response) => {
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok) throw new Error(data?.error || 'Live check failed.');
+          return data;
+        })
+        .then((scan) => {
+          if (!cancelled) onApplyLiveScan(project.id, scan);
+        })
+        .catch((error) => {
+          if (!cancelled) {
+            onApplyLiveScan(project.id, {
+              url: liveLink.url,
+              checkedAt: new Date().toISOString(),
+              error: error.message || 'Live check failed.',
+            });
+          }
+        });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [connectedProjects, liveLinks, onApplyLiveScan]);
+  const selectedLiveProject = projects.find((project) => project.id === selectedProjectId) ?? connectedProjects[0] ?? projects[0] ?? null;
+  const attentionProjects = connectedProjects.filter((project) => hasLiveAttention(project) || liveMetricsSummary(project, liveLinks[project.id]).gaps.length > 0);
+  const attentionProjectIds = new Set(attentionProjects.map((project) => project.id));
+  const metricTotals = connectedProjects.reduce((totals, project) => {
+    const summary = liveMetricsSummary(project, liveLinks[project.id]);
+    return {
+      score: totals.score + summary.score,
+      gaps: totals.gaps + summary.gaps.length,
+      launchFindings: totals.launchFindings + launchHygieneRisks(project).length,
+      completed: totals.completed + summary.checklist.completed,
+      total: totals.total + summary.checklist.total,
+    };
+  }, { score: 0, gaps: 0, launchFindings: 0, completed: 0, total: 0 });
+  const stats = [
+    { label: 'Live surfaces', value: connectedProjects.length, icon: Link },
+    { label: 'Checklist done', value: `${metricTotals.completed}/${metricTotals.total || 0}`, icon: CheckCircle2 },
+    { label: 'Checklist gaps', value: metricTotals.gaps, icon: AlertTriangle },
+    { label: 'Not connected', value: unconnectedProjects.length, icon: CircleHelp },
+  ];
+
+  if (!projects.length) {
+    return (
+      <SetupRequiredState
+        eyebrow="Live"
+        title="No projects mapped yet"
+        detail={hasKnownProjects
+          ? 'Move projects into the active workspace map before attaching deployed URLs.'
+          : 'Add or scan local projects first. Live connects deployed surfaces back to local project records.'}
+        hasKnownProjects={hasKnownProjects}
+        onOpenSettings={onOpenSettings}
+        onShowScannerHelp={onShowScannerHelp}
+        onAddManualProject={onAddManualProject}
+      />
+    );
+  }
+
+  return (
+    <section className="live-view">
+      <div className="live-view__header">
+        <div>
+          <div className="text-xs font-black uppercase tracking-[0.28em] text-indigo-300">Live</div>
+          <h2>Deployed surfaces</h2>
+          <p>Track the live-surface basics for every deployed project: favicon, social preview card, and SEO readiness.</p>
+        </div>
+        <div className="live-view__stats">
+          {stats.map((item) => {
+            const Icon = item.icon;
+            return (
+              <div key={item.label}>
+                <Icon size={17} />
+                <strong>{item.value}</strong>
+                <span>{item.label}</span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {connectedProjects.length === 0 && (
+        <section className="live-empty">
+          <div>
+            <Link size={24} />
+            <h3>No live projects connected yet</h3>
+            <p>Attach a deployed URL to any local project to see its live surface here.</p>
+          </div>
+        </section>
+      )}
+
+      <div className="live-workbench">
+        <div className="live-workbench__main">
+          {connectedProjects.length > 0 && (
+            <section className="live-section">
+              <div className="live-section__heading">
+                <h3>Connected</h3>
+                <span>{connectedProjects.length}</span>
+              </div>
+              <div className="live-project-list">
+                {[...attentionProjects, ...connectedProjects.filter((project) => !attentionProjectIds.has(project.id))].map((project) => (
+                  <LiveProjectRow
+                    key={project.id}
+                    project={project}
+                    liveLink={liveLinks[project.id]}
+                    selected={project.id === selectedLiveProject?.id}
+                    onSelect={(selectedProject) => setSelectedProjectId(selectedProject.id)}
+                    onOpenProject={onOpenProject}
+                    onAttachUrl={onAttachUrl}
+                  />
+                ))}
+              </div>
+            </section>
+          )}
+
+          <section className="live-section">
+            <div className="live-section__heading">
+              <h3>Ready to connect</h3>
+              <span>{unconnectedProjects.length}</span>
+            </div>
+            {unconnectedProjects.length > 0 ? (
+              <div className="live-project-list">
+                {unconnectedProjects.map((project) => (
+                  <LiveProjectRow
+                    key={project.id}
+                    project={project}
+                    liveLink={null}
+                    selected={project.id === selectedLiveProject?.id}
+                    onSelect={(selectedProject) => setSelectedProjectId(selectedProject.id)}
+                    onOpenProject={onOpenProject}
+                    onAttachUrl={onAttachUrl}
+                  />
+                ))}
+              </div>
+            ) : (
+              <div className="live-section__empty">All mapped projects have a live URL attached.</div>
+            )}
+          </section>
+        </div>
+
+        <LiveStateSidebar
+          project={selectedLiveProject}
+          liveLink={selectedLiveProject ? liveLinks[selectedLiveProject.id] : null}
+          onOpenProject={onOpenProject}
+          onAttachUrl={onAttachUrl}
+          onToggleLiveChecklist={onToggleLiveChecklist}
+        />
+      </div>
+    </section>
+  );
+};
+
+const AgentContextPanel = ({ project }) => {
+  const summary = agentContextSummary(project);
+  return (
+    <section>
+      <div className="project-drawer__section-heading project-drawer__section-heading--subtle">
+        <h3><FileJson size={14} /> Agent Context</h3>
+        <span>{summary.hasInstructions ? `${summary.files.length} file${summary.files.length === 1 ? '' : 's'}` : 'Missing'}</span>
+      </div>
+      {summary.hasInstructions ? (
+        <div className="agent-context-panel agent-context-panel--ready">
+          <ProjectSignalLine
+            tone="success"
+            icon={CheckCircle2}
+            title="Agent instructions are present"
+            detail="Agents have project-specific context before making changes."
+            meta={`Found: ${summary.files.join(', ')}`}
+          />
+          {summary.hasSkills && (
+            <ProjectSignalLine
+              tone="info"
+              icon={FileJson}
+              title={`${summary.skills.length} repo-local skill${summary.skills.length === 1 ? '' : 's'} detected`}
+              detail="Aperture surfaces these as read-only project context; editing and execution stay in the IDE or agent tool."
+              meta={summary.skills.map((skill) => skill.path ?? skill.name).filter(Boolean).join(', ')}
+            />
+          )}
+        </div>
+      ) : (
+        <div className="agent-context-panel agent-context-panel--missing">
+          <ProjectSignalLine
+            tone="warning"
+            icon={AlertTriangle}
+            title="No agent instructions"
+            detail="Agents will enter this repo without project-specific rules, architecture notes, test expectations, or safe-change boundaries."
+            meta="Without agent instructions, a coding agent has to infer conventions from the repo, increasing the chance of wrong commands, misplaced files, skipped tests, or changes that violate local patterns."
+          />
+          <CopyStarterAgentsButton />
+          {summary.hasSkills && (
+            <ProjectSignalLine
+              tone="info"
+              icon={FileJson}
+              title={`${summary.skills.length} repo-local skill${summary.skills.length === 1 ? '' : 's'} detected`}
+              detail="Skills are visible, but this project still lacks general agent instructions."
+              meta={summary.skills.map((skill) => skill.path ?? skill.name).filter(Boolean).join(', ')}
+            />
+          )}
+        </div>
+      )}
+    </section>
+  );
+};
+
 const TechPill = ({ tech }) => (
   <span className={`rounded border px-2 py-0.5 text-[10px] font-bold uppercase tracking-tight ${techColors[tech] || techColors.default}`}>
     {tech}
@@ -2191,7 +2933,7 @@ const agentBriefLines = (project, drift = []) => {
   ];
 };
 
-const ExperimentalProjectCard = ({ project, onSelect, drift = [], isReference }) => {
+const ExperimentalProjectCard = ({ project, onSelect, drift = [], isReference, onRefreshScan, scanRefreshStatus }) => {
   const stack = stackList(project);
   const risk = topRiskFinding(project.risks ?? []);
   const readiness = project.aiReadiness?.score ?? 0;
@@ -2252,7 +2994,7 @@ const ExperimentalProjectCard = ({ project, onSelect, drift = [], isReference })
           {isReference && <InfoPopover {...conceptHelp('reference', { project, drift, isReference })} />}
         </span>
         <span className="project-card-exp__top-actions">
-          <RuntimeStatusIndicator runtimeStatus={project.runtimeStatus} align="right" compact />
+          <RuntimeStatusIndicator runtimeStatus={project.runtimeStatus} align="right" compact onRefreshScan={onRefreshScan} refreshStatus={scanRefreshStatus} />
           <span className={`project-card-exp__state project-card-exp__state--${readiness >= 80 ? 'good' : readiness >= 50 ? 'watch' : 'risk'}`}>
             {setup.label}
             <InfoPopover {...conceptHelp('readiness', { project, drift, isReference })} align="right" />
@@ -2265,9 +3007,9 @@ const ExperimentalProjectCard = ({ project, onSelect, drift = [], isReference })
           <h3>{project.name}</h3>
           <p>{project.path}</p>
         </div>
-        <div className="project-card-exp__score">
-          <span>{readiness}</span>
-          <small>%</small>
+        <div className="project-card-exp__score" aria-label={`${readiness}% setup ready`}>
+          <span>{readiness}<small>%</small></span>
+          <em>setup ready</em>
         </div>
       </div>
 
@@ -2308,24 +3050,27 @@ const ExperimentalProjectCard = ({ project, onSelect, drift = [], isReference })
 };
 
 const DiscoveryReview = ({ candidates, onCommitProjectStates, onDefer }) => {
-  const [openMenuId, setOpenMenuId] = useState(null);
   const [draftStates, setDraftStates] = useState({});
-  const stagedCount = Object.values(draftStates).filter(Boolean).length;
-  const workspaceCount = Object.values(draftStates).filter((state) => state === 'tracked' || state === 'reference').length;
-  const deferredCount = candidates.length - stagedCount;
+  const selectedIds = candidates.filter((project) => draftStates[project.id] !== 'ignored').map((project) => project.id);
+  const workspaceCount = selectedIds.length;
+  const deferredCount = candidates.length - workspaceCount;
   const commitLabel = workspaceCount
     ? `Finish setup · ${workspaceCount} selected`
     : 'Finish with none selected';
-  const stageProject = (projectId, state) => {
-    setDraftStates((current) => ({ ...current, [projectId]: state }));
-    setOpenMenuId(null);
+  const toggleProject = (projectId) => {
+    setDraftStates((current) => ({
+      ...current,
+      [projectId]: current[projectId] === 'ignored' ? 'tracked' : 'ignored',
+    }));
   };
   const trackAll = () => {
     setDraftStates(Object.fromEntries(candidates.map((project) => [project.id, 'tracked'])));
-    setOpenMenuId(null);
+  };
+  const hideAll = () => {
+    setDraftStates(Object.fromEntries(candidates.map((project) => [project.id, 'ignored'])));
   };
   const finishSetup = () => {
-    onCommitProjectStates(Object.fromEntries(candidates.map((project) => [project.id, draftStates[project.id] ?? 'sleeping'])));
+    onCommitProjectStates(Object.fromEntries(candidates.map((project) => [project.id, draftStates[project.id] ?? 'tracked'])));
   };
   const selectionLabel = workspaceCount
     ? `${workspaceCount} selected for the workspace`
@@ -2353,62 +3098,43 @@ const DiscoveryReview = ({ candidates, onCommitProjectStates, onDefer }) => {
           <span>{candidates.length} candidate{candidates.length === 1 ? '' : 's'} found</span>
           <div>
             <button type="button" onClick={trackAll}>Track all</button>
+            <button type="button" onClick={hideAll}>Hide all</button>
             <button type="button" onClick={onDefer}>Skip all for now</button>
           </div>
         </div>
 
         {candidates.length > 0 && (
           <div className="setup-wizard__list">
-            {candidates.map((project) => (
-              <article key={project.id} className={`setup-candidate ${draftStates[project.id] ? 'is-selected' : ''}`}>
-                <div className="setup-candidate__identity">
-                  <h3>{project.name}</h3>
-                  <p>{project.path}</p>
-                </div>
-                <div className="setup-candidate__meta">
-                  <span>{stackList(project).slice(0, 2).join(' / ') || 'Unknown stack'}</span>
-                  <span>{draftStates[project.id] ? PROJECT_STATE_LABELS[draftStates[project.id]] : `${(project.risks ?? []).length} finding${(project.risks ?? []).length === 1 ? '' : 's'}`}</span>
-                </div>
-                <div className="setup-candidate__actions">
-                  <button type="button" className="setup-candidate__track" onClick={() => stageProject(project.id, 'tracked')}>
-                    Track
-                  </button>
-                  <button type="button" onClick={() => stageProject(project.id, 'reference')}>
-                    Reference
-                  </button>
-                  <div className="setup-candidate__more">
-                    <button
-                      type="button"
-                      aria-label={`More actions for ${project.name}`}
-                      aria-expanded={openMenuId === project.id}
-                      onClick={() => setOpenMenuId((current) => (current === project.id ? null : project.id))}
-                    >
-                      <MoreHorizontal size={18} />
-                    </button>
-                    {openMenuId === project.id && (
-                      <div className="setup-candidate__menu">
-                        {['sleeping', 'archived', 'ignored'].map((state) => (
-                          <button
-                            key={state}
-                            type="button"
-                            onClick={() => stageProject(project.id, state)}
-                          >
-                            {PROJECT_STATE_LABELS[state]}
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </article>
-            ))}
+            {candidates.map((project) => {
+              const selected = draftStates[project.id] !== 'ignored';
+              return (
+                <label key={project.id} className={`setup-candidate ${selected ? 'is-selected' : ''}`}>
+                  <input
+                    type="checkbox"
+                    checked={selected}
+                    onChange={() => toggleProject(project.id)}
+                  />
+                  <span className="setup-candidate__check" aria-hidden="true">
+                    {selected && <CheckCircle2 size={18} />}
+                  </span>
+                  <span className="setup-candidate__identity">
+                    <strong>{project.name}</strong>
+                    <small>{project.path}</small>
+                  </span>
+                  <span className="setup-candidate__meta">
+                    <span>{stackList(project).slice(0, 2).join(' / ') || 'Unknown stack'}</span>
+                    <span>{selected ? 'Active' : 'Hidden'} · {(project.risks ?? []).length} finding{(project.risks ?? []).length === 1 ? '' : 's'}</span>
+                  </span>
+                </label>
+              );
+            })}
           </div>
         )}
 
         <div className="setup-wizard__finish">
           <div>
             <strong>{selectionLabel}</strong>
-            <span>{deferredCount ? `${deferredCount} candidate${deferredCount === 1 ? '' : 's'} will be marked sleeping.` : 'All candidates have a decision.'}</span>
+            <span>{deferredCount ? `${deferredCount} candidate${deferredCount === 1 ? '' : 's'} will be hidden.` : 'All candidates have a decision.'}</span>
           </div>
           <button type="button" className="setup-wizard__done" onClick={finishSetup}>
             <CheckCircle2 size={15} />
@@ -2420,7 +3146,21 @@ const DiscoveryReview = ({ candidates, onCommitProjectStates, onDefer }) => {
   );
 };
 
-const ProjectDrawer = ({ project, open, onClose, drift = [], referenceProject, isReference, onRefreshScan, scanRefreshStatus, initialTab = 'overview' }) => {
+const ProjectDrawer = ({
+  project,
+  open,
+  onClose,
+  drift = [],
+  referenceProject,
+  isReference,
+  liveLink,
+  onSaveLiveLink,
+  onClearLiveLink,
+  onToggleLiveChecklist,
+  onRefreshScan,
+  scanRefreshStatus,
+  initialTab = 'overview',
+}) => {
   const [activeTab, setActiveTab] = useState(initialTab);
   const risks = project.risks ?? [];
   const launchRisks = launchHygieneRisks(project);
@@ -2432,8 +3172,8 @@ const ProjectDrawer = ({ project, open, onClose, drift = [], referenceProject, i
   const tabs = [
     { id: 'overview', label: 'Overview', icon: FolderOpen },
     { id: 'signals', label: 'Signals', icon: ShieldAlert },
-    { id: 'drift', label: 'Drift', icon: GitCompareArrows },
     { id: 'brief', label: 'Brief', icon: FileJson },
+    { id: 'settings', label: 'Settings', icon: Settings },
   ];
   useEffect(() => {
     if (open) {
@@ -2449,7 +3189,7 @@ const ProjectDrawer = ({ project, open, onClose, drift = [], referenceProject, i
           <div>
             <h2 className="flex items-center gap-2 text-xl font-bold text-slate-100">
               <FolderOpen className="text-indigo-400" /> {project.name}
-              <RuntimeStatusIndicator runtimeStatus={project.runtimeStatus} align="right" compact />
+              <RuntimeStatusIndicator runtimeStatus={project.runtimeStatus} align="right" compact onRefreshScan={onRefreshScan} refreshStatus={scanRefreshStatus} />
             </h2>
             <p className="mt-1 font-mono text-sm text-slate-500">{project.path}</p>
           </div>
@@ -2481,7 +3221,7 @@ const ProjectDrawer = ({ project, open, onClose, drift = [], referenceProject, i
         <div className="project-drawer__body custom-scrollbar">
           {activeTab === 'signals' ? (
             <>
-              <section className="project-drawer__panel project-drawer__panel--readiness">
+              <section className="project-drawer__signal-block project-drawer__signal-block--setup">
                 <div className="project-drawer__section-heading">
                   <h3><Cpu size={14} /> Setup Signals</h3>
                   <span>{readinessSummary(project.aiReadiness).label}</span>
@@ -2495,37 +3235,42 @@ const ProjectDrawer = ({ project, open, onClose, drift = [], referenceProject, i
                       {check.passed ? <CheckCircle2 size={15} className="text-emerald-400" /> : <AlertTriangle size={15} className="text-amber-400" />}
                       <span>{check.label}</span>
                     </div>
-                  )) : <span className="text-sm text-slate-500">No setup signal details in this dataset.</span>}
+                  )) : <span className="project-drawer__muted-line">No setup signal details in this dataset.</span>}
                 </div>
               </section>
+
+              <AgentContextPanel project={project} />
 
               <section>
                 <div className="project-drawer__section-heading project-drawer__section-heading--subtle">
                   <h3>
                     <AlertTriangle size={14} /> Fix Before Sharing
-                    <InfoPopover {...briefExplainers['Launch hygiene']} />
+                    <InfoPopover {...briefExplainers['Launch hygiene']} align="right" />
                   </h3>
                   <span>{launchRisks.length} finding{launchRisks.length === 1 ? '' : 's'}</span>
                 </div>
                 <div className="project-drawer__stack">
                   {launchRisks.length > 0 ? launchRisks.map((risk) => (
-                    <div key={`${risk.id}-${risk.detail}`} className={`project-drawer__drift-card ${severityStyles[risk.severity] || severityStyles.low}`}>
-                      <div className="project-drawer__drift-head">
-                        <div>
-                          <div className="project-drawer__drift-title">{risk.title}</div>
-                          <div className="project-drawer__drift-detail">{risk.detail}</div>
-                          <div className="project-drawer__why">
-                            Confidence: {risk.confidence ?? 'medium'}{risk.evidence?.length ? ` · Evidence: ${risk.evidence.join(', ')}` : ''}
-                          </div>
-                          {risk.fix && <div className="project-drawer__fix">{risk.fix}</div>}
-                        </div>
-                        <div className="project-drawer__tag">{riskCategory(risk)}</div>
-                      </div>
-                    </div>
+                    <ProjectSignalLine
+                      key={`${risk.id}-${risk.detail}`}
+                      tone={severityTones[risk.severity] || 'info'}
+                      icon={AlertTriangle}
+                      eyebrow={riskCategory(risk)}
+                      title={risk.title}
+                      detail={risk.detail}
+                      meta={[
+                        `Confidence: ${risk.confidence ?? 'medium'}`,
+                        risk.evidence?.length ? `Evidence: ${risk.evidence.join(', ')}` : null,
+                        risk.fix ? `Fix: ${risk.fix}` : null,
+                      ].filter(Boolean).join(' · ')}
+                      side={risk.severity}
+                    />
                   )) : (
-                    <div className="project-drawer__panel project-drawer__empty text-emerald-300">
-                      <CheckCircle2 className="mx-auto mb-2" /> No stack-aware launch findings detected.
-                    </div>
+                    <ProjectSignalLine
+                      tone="success"
+                      icon={CheckCircle2}
+                      title="No stack-aware launch findings detected."
+                    />
                   )}
                 </div>
               </section>
@@ -2537,15 +3282,21 @@ const ProjectDrawer = ({ project, open, onClose, drift = [], referenceProject, i
                 </div>
                 <div className="project-drawer__stack">
                   {risks.length > 0 ? risks.map((risk) => (
-                    <div key={`${risk.id}-${risk.detail}`} className={`project-drawer__drift-card ${severityStyles[risk.severity] || severityStyles.low}`}>
-                      <div className="project-drawer__drift-title">{riskCategory(risk)}: {risk.title}</div>
-                      <div className="project-drawer__drift-detail">{risk.detail}</div>
-                      <div className="project-drawer__why">{riskWhyShown(risk)}</div>
-                    </div>
+                    <ProjectSignalLine
+                      key={`${risk.id}-${risk.detail}`}
+                      tone={severityTones[risk.severity] || 'info'}
+                      icon={ShieldAlert}
+                      eyebrow={riskCategory(risk)}
+                      title={risk.title}
+                      detail={risk.detail}
+                      meta={riskWhyShown(risk)}
+                    />
                   )) : (
-                    <div className="project-drawer__panel project-drawer__empty text-emerald-300">
-                      <CheckCircle2 className="mx-auto mb-2" /> No hygiene findings from {SCANNER_CHECK_SCOPE}.
-                    </div>
+                    <ProjectSignalLine
+                      tone="success"
+                      icon={CheckCircle2}
+                      title={`No hygiene findings from ${SCANNER_CHECK_SCOPE}.`}
+                    />
                   )}
                 </div>
               </section>
@@ -2556,14 +3307,19 @@ const ProjectDrawer = ({ project, open, onClose, drift = [], referenceProject, i
                 </div>
                 <div className="project-drawer__stack">
                   {normalChecks.length > 0 ? normalChecks.map((check) => (
-                    <div key={check.title} className="project-drawer__normal-card">
-                      <div className="project-drawer__drift-title">{check.title}</div>
-                      <div className="project-drawer__drift-detail">{check.detail}</div>
-                    </div>
+                    <ProjectSignalLine
+                      key={check.title}
+                      tone="success"
+                      icon={CheckCircle2}
+                      title={check.title}
+                      detail={check.detail}
+                    />
                   )) : (
-                    <div className="project-drawer__panel project-drawer__empty">
-                      No stack-specific normalizations apply yet.
-                    </div>
+                    <ProjectSignalLine
+                      tone="info"
+                      icon={CheckCircle2}
+                      title="No stack-specific normalizations apply yet."
+                    />
                   )}
                 </div>
               </section>
@@ -2572,69 +3328,69 @@ const ProjectDrawer = ({ project, open, onClose, drift = [], referenceProject, i
                 <div className="project-drawer__section-heading project-drawer__section-heading--subtle">
                   <h3>
                     <CircleHelp size={14} /> Skipped Checks
-                    <InfoPopover {...briefExplainers['Skipped checks']} />
+                    <InfoPopover {...briefExplainers['Skipped checks']} align="right" />
                   </h3>
                 </div>
                 <div className="project-drawer__stack">
                   {skippedChecks.length > 0 ? skippedChecks.map((check) => (
-                    <div key={check.id} className="project-drawer__skipped-card">
-                      <div className="project-drawer__drift-title">{check.title}</div>
-                      <div className="project-drawer__drift-detail">{check.reason}</div>
-                    </div>
+                    <ProjectSignalLine
+                      key={check.id}
+                      tone="info"
+                      icon={CircleHelp}
+                      title={check.title}
+                      detail={check.reason}
+                    />
                   )) : (
-                    <div className="project-drawer__panel project-drawer__empty text-emerald-300">
-                      <CheckCircle2 className="mx-auto mb-2" /> No checks were skipped for this project profile.
-                    </div>
+                    <ProjectSignalLine
+                      tone="success"
+                      icon={CheckCircle2}
+                      title="No checks were skipped for this project profile."
+                    />
                   )}
                 </div>
               </section>
             </>
-          ) : activeTab === 'drift' ? (
-            <section>
-              <div className="project-drawer__section-heading project-drawer__section-heading--subtle">
-                <h3>
-                  <GitCompareArrows size={14} /> Reference Differences
-                  <InfoPopover {...briefExplainers.Reference} />
-                </h3>
-                <span>vs. {referenceProject?.name ?? 'reference'}</span>
-              </div>
-              {isReference ? (
-                <div className="project-drawer__panel project-drawer__empty">
-                  This project is the current reference. Other projects are compared against it.
-                </div>
-              ) : drift.length > 0 ? (
-                <div className="project-drawer__stack">
-                  {drift.map((item) => (
-                    <div key={item.id} className={`project-drawer__drift-card ${severityStyles[item.severity] || severityStyles.medium}`}>
-                      <div className="project-drawer__drift-head">
-                        <div>
-                          <div className="project-drawer__drift-title">{item.category}</div>
-                          <div className="project-drawer__drift-detail">{item.detail}</div>
-                          <div className="project-drawer__why">{driftWhyShown(item)}</div>
-                        </div>
-                        <div className="project-drawer__tag">Advisory</div>
-                      </div>
-                      <div className="project-drawer__diff-row">
-                        <span className="project-drawer__diff-value project-drawer__diff-value--current">{item.current}</span>
-                        <ChevronRight size={13} className="project-drawer__diff-arrow" />
-                        <span className="project-drawer__diff-value project-drawer__diff-value--reference">{item.reference}</span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="project-drawer__panel project-drawer__empty text-emerald-300">
-                  <CheckCircle2 className="mx-auto mb-2" /> Matches the reference on package, scripts, docs, env, CI, and runtime hints checked by Aperture.
-                </div>
-              )}
-            </section>
           ) : activeTab === 'brief' ? (
             <section className="project-drawer__panel">
               <div className="project-drawer__section-heading project-drawer__section-heading--subtle">
-                <h3><FileJson size={14} /> Project Handoff</h3>
+                <h3><FileJson size={14} /> Project Brief</h3>
               </div>
               <CopyableHandoff text={briefText} label="project brief" />
             </section>
+          ) : activeTab === 'settings' ? (
+            <>
+              <section className="project-drawer__panel project-settings-panel">
+                <div className="project-drawer__section-heading">
+                  <h3><Settings size={14} /> Project Settings</h3>
+                  <span>{project.source === 'manual' ? 'Manual' : 'Scanner + metadata'}</span>
+                </div>
+                <div className="project-settings-summary">
+                  <div>
+                    <span>Display name</span>
+                    <strong>{project.name}</strong>
+                  </div>
+                  <div>
+                    <span>Lifecycle</span>
+                    <strong>{PROJECT_STATE_LABELS[project.projectState] ?? 'Tracked'}</strong>
+                  </div>
+                  <div>
+                    <span>Local source</span>
+                    <strong>{project.source === 'manual' ? 'Manual entry' : 'Workspace scan'}</strong>
+                  </div>
+                </div>
+                <p className="project-settings-note">
+                  Project settings store local app metadata. Scanner facts such as path, Git state, stack, and scripts remain read-only.
+                </p>
+              </section>
+              <ProjectLiveSettings
+                project={project}
+                liveLink={liveLink}
+                onSaveLiveLink={onSaveLiveLink}
+                onClearLiveLink={onClearLiveLink}
+                onToggleLiveChecklist={onToggleLiveChecklist}
+                focusOnOpen={open && initialTab === 'settings'}
+              />
+            </>
           ) : (
             <>
               <section className="project-drawer__stats">
@@ -2653,7 +3409,7 @@ const ProjectDrawer = ({ project, open, onClose, drift = [], referenceProject, i
                 <div className="project-drawer__stat">
                   <div className="project-drawer__label">Runtime</div>
                   <div className="project-drawer__value">
-                    <RuntimeStatusIndicator runtimeStatus={project.runtimeStatus} align="right" />
+                    <RuntimeStatusIndicator runtimeStatus={project.runtimeStatus} align="right" onRefreshScan={onRefreshScan} refreshStatus={scanRefreshStatus} />
                   </div>
                 </div>
               </section>
@@ -2679,6 +3435,45 @@ const ProjectDrawer = ({ project, open, onClose, drift = [], referenceProject, i
                     </div>
                   ))}
                 </div>
+              </section>
+
+              <section className="project-drawer__panel">
+                <div className="project-drawer__section-heading project-drawer__section-heading--subtle">
+                  <h3>
+                    <GitCompareArrows size={14} /> Reference Differences
+                    <InfoPopover {...briefExplainers.Reference} />
+                  </h3>
+                  <span>vs. {referenceProject?.name ?? 'reference'}</span>
+                </div>
+                {isReference ? (
+                  <div className="project-drawer__empty">
+                    This project is the current reference. Other projects are compared against it.
+                  </div>
+                ) : drift.length > 0 ? (
+                  <div className="project-drawer__stack">
+                    {drift.slice(0, 4).map((item) => (
+                      <div key={item.id} className={`project-drawer__drift-card ${severityStyles[item.severity] || severityStyles.medium}`}>
+                        <div className="project-drawer__drift-head">
+                          <div>
+                            <div className="project-drawer__drift-title">{item.category}</div>
+                            <div className="project-drawer__drift-detail">{item.detail}</div>
+                            <div className="project-drawer__why">{driftWhyShown(item)}</div>
+                          </div>
+                          <div className="project-drawer__tag">Advisory</div>
+                        </div>
+                        <div className="project-drawer__diff-row">
+                          <span className="project-drawer__diff-value project-drawer__diff-value--current">{item.current}</span>
+                          <ChevronRight size={13} className="project-drawer__diff-arrow" />
+                          <span className="project-drawer__diff-value project-drawer__diff-value--reference">{item.reference}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="project-drawer__empty text-emerald-300">
+                    <CheckCircle2 className="mx-auto mb-2" /> Matches the reference on package, scripts, docs, env, CI, and runtime hints checked by Aperture.
+                  </div>
+                )}
               </section>
 
               <ProjectSourceSignal project={project} onRefreshScan={onRefreshScan} refreshStatus={scanRefreshStatus} />
@@ -2744,20 +3539,21 @@ const SettingsModal = ({ open, projects, allProjects, referenceProjectId, onRefe
             <h3 className="settings-modal__setting-title">
               <FolderOpen size={16} /> Discovery Management
             </h3>
-            <p className="settings-modal__setting-copy">Manage tracked, ignored, archived, sleeping, and reference projects from the latest workspace scan.</p>
+            <p className="settings-modal__setting-copy">Choose what appears in Projects. Reference is controlled only by the dropdown above.</p>
           </div>
           <div className="settings-project-list">
             {allProjects.length > 0 ? allProjects.map((project) => (
               <div key={project.id} className="settings-project-row">
                 <div className="min-w-0">
                   <strong>{project.name}</strong>
-                  <span>{PROJECT_STATE_LABELS[project.projectState] ?? 'Candidate'} · {launchProfileSummary(project.launchProfile)}</span>
+                  <span>{project.id === referenceProjectId ? 'Reference · ' : ''}{TRACKED_PROJECT_STATES.has(project.projectState) ? 'Active' : 'Hidden'} · {launchProfileSummary(project.launchProfile)}</span>
                 </div>
                 <select
-                  value={project.projectState}
+                  className="settings-project-row__select"
+                  value={TRACKED_PROJECT_STATES.has(project.projectState) ? 'tracked' : 'ignored'}
                   onChange={(event) => onSetProjectState(project.id, event.target.value)}
                 >
-                  {Object.entries(PROJECT_STATE_LABELS).map(([value, label]) => (
+                  {SETTINGS_PROJECT_STATE_OPTIONS.map(({ value, label }) => (
                     <option key={value} value={value}>{label}</option>
                   ))}
                 </select>
@@ -2914,7 +3710,7 @@ const ProjectSourceSignal = ({ project, onRefreshScan, refreshStatus }) => {
                       <span><b>Full SHA</b><code>{commit.sha || 'unknown'}</code></span>
                       <span><b>When</b>{formatDate(commit.date)}</span>
                       {commit.refs?.length > 0 && <span><b>Refs</b>{commit.refs.map((ref) => ref.replace('HEAD -> ', '')).join(', ')}</span>}
-                      <span><b>Handoff note</b>{index === 0 ? 'Latest captured commit. Pair this with current dirty files before handoff.' : 'Recent commit from scanner history. Full diff is not captured in this scan.'}</span>
+                      <span><b>Work note</b>{index === 0 ? 'Latest captured commit. Pair this with current dirty files before making changes.' : 'Recent commit from scanner history. Full diff is not captured in this scan.'}</span>
                     </span>
                   )}
                 </span>
@@ -2939,23 +3735,46 @@ const BriefLine = ({ line }) => {
   );
 };
 
-const Sidebar = ({ activeSection, collapsed, onSectionChange, onToggleCollapsed }) => (
-  <aside className={`app-sidebar ${collapsed ? 'is-collapsed' : ''}`}>
-    <div className="app-sidebar__brand">
-      <div className="app-sidebar__mark">
-        <Zap size={20} />
+const AppHeader = ({ addProjectOpen, onToggleAddProject, theme, onThemeChange, settingsOpen, onOpenSettings }) => (
+  <header className="app-header">
+    <div className="app-header__brand" aria-label="Aperture local workspace map">
+      <div className="app-header__mark">
+        <span className="app-header__mark-grid" />
+        <span className="app-header__mark-node app-header__mark-node--one" />
+        <span className="app-header__mark-node app-header__mark-node--active" />
+        <span className="app-header__mark-focus app-header__mark-focus--tl" />
+        <span className="app-header__mark-focus app-header__mark-focus--br" />
       </div>
-      <div className="app-sidebar__brand-text">
+      <div className="app-header__brand-text">
         <strong>Aperture</strong>
-        <span>Local workspace</span>
+        <span>Local workspace map</span>
       </div>
     </div>
 
+    <div className="app-header__actions">
+      <AddProjectButton
+        open={addProjectOpen}
+        onClick={onToggleAddProject}
+      />
+      <ThemeSwitcher
+        theme={theme}
+        onThemeChange={onThemeChange}
+      />
+      <SettingsButton
+        open={settingsOpen}
+        onClick={onOpenSettings}
+      />
+    </div>
+  </header>
+);
+
+const Sidebar = ({ activeSection, collapsed, onSectionChange, onToggleCollapsed }) => (
+  <aside className={`app-sidebar ${collapsed ? 'is-collapsed' : ''}`}>
     <nav className="app-sidebar__nav" aria-label="Primary">
       {[
         { name: 'Projects', icon: FolderOpen, active: activeSection === 'projects', onClick: () => onSectionChange('projects') },
-        { name: 'Workspace', icon: LayoutDashboard, active: activeSection === 'workspace', onClick: () => onSectionChange('workspace') },
         { name: 'Brief', icon: FileJson, active: activeSection === 'brief', onClick: () => onSectionChange('brief') },
+        { name: 'Live', icon: Link, active: activeSection === 'live', onClick: () => onSectionChange('live') },
       ].map((item) => (
         <button
           key={item.name}
@@ -2990,7 +3809,7 @@ export default function App() {
   const [selectedProject, setSelectedProject] = useState(null);
   const [projectDrawerOpen, setProjectDrawerOpen] = useState(false);
   const [projectDrawerInitialTab, setProjectDrawerInitialTab] = useState('overview');
-  const [activeSection, setActiveSection] = useState('workspace');
+  const [activeSection, setActiveSection] = useState('projects');
   const [briefFocus, setBriefFocus] = useState('priority');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem('aperture-sidebar-collapsed') === 'true');
   const [theme, setTheme] = useState(() => normalizeThemeId(localStorage.getItem('aperture-theme') || localStorage.getItem('aperture-theme-mode') || 'base'));
@@ -2999,6 +3818,7 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [manualProjects, setManualProjects] = useState(readManualProjects);
   const [projectStates, setProjectStates] = useState(readProjectStates);
+  const [projectLiveLinks, setProjectLiveLinks] = useState(readProjectLiveLinks);
   const [referenceProjectId, setReferenceProjectId] = useState(() => localStorage.getItem('aperture-reference-project') || '');
   const [folderPickerMessage, setFolderPickerMessage] = useState('');
   const [scanRefreshStatus, setScanRefreshStatus] = useState('idle');
@@ -3052,6 +3872,10 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem(PROJECT_STATES_STORAGE_KEY, JSON.stringify(projectStates));
   }, [projectStates]);
+
+  useEffect(() => {
+    localStorage.setItem(PROJECT_LIVE_LINKS_STORAGE_KEY, JSON.stringify(projectLiveLinks));
+  }, [projectLiveLinks]);
 
   useEffect(() => {
     if (!settingsOpen && !addProjectOpen) return undefined;
@@ -3124,16 +3948,83 @@ export default function App() {
     setSettingsOpen(false);
   };
   const openBrief = (focus = 'priority') => {
-    setBriefFocus(focus);
+    const focusAliases = {
+      risks: 'risk',
+      dirty: 'git',
+    };
+    setBriefFocus(focusAliases[focus] || focus);
     showSection('brief');
   };
   const openSettings = () => {
     setSettingsOpen(true);
   };
+  const saveProjectLiveLink = (projectId, liveLink) => {
+    setProjectLiveLinks((current) => ({
+      ...current,
+      [projectId]: {
+        url: normalizeLiveUrl(liveLink.url),
+        environment: normalizeLiveEnvironment(liveLink.environment),
+        provider: normalizeLiveProvider(liveLink.provider),
+        checklist: normalizeLiveChecklist(current[projectId]?.checklist),
+        scan: normalizeLiveScan(current[projectId]?.scan),
+        updatedAt: new Date().toISOString(),
+      },
+    }));
+  };
+  const applyProjectLiveScan = (projectId, scan) => {
+    setProjectLiveLinks((current) => {
+      const existing = current[projectId];
+      if (!existing?.url) return current;
+      const normalizedScan = normalizeLiveScan(scan) ?? {
+        url: existing.url,
+        checkedAt: new Date().toISOString(),
+        error: 'Live check failed.',
+        checks: {},
+      };
+      return {
+        ...current,
+        [projectId]: {
+          ...existing,
+          scan: normalizedScan,
+          checklist: Object.fromEntries(LIVE_CHECKLIST_ITEMS.map((item) => [
+            item.id,
+            Boolean(normalizedScan.checks?.[item.id]?.passed),
+          ])),
+          updatedAt: new Date().toISOString(),
+        },
+      };
+    });
+  };
+  const clearProjectLiveLink = (projectId) => {
+    setProjectLiveLinks((current) => {
+      const next = { ...current };
+      delete next[projectId];
+      return next;
+    });
+  };
+  const toggleProjectLiveChecklist = (projectId, checklistId, checked) => {
+    setProjectLiveLinks((current) => {
+      const existing = current[projectId];
+      if (!existing?.url) return current;
+      return {
+        ...current,
+        [projectId]: {
+          ...existing,
+          checklist: {
+            ...normalizeLiveChecklist(existing.checklist),
+            [checklistId]: Boolean(checked),
+          },
+          updatedAt: new Date().toISOString(),
+        },
+      };
+    });
+  };
   const setProjectState = (projectId, state) => {
-    setProjectStates((current) => ({ ...current, [projectId]: normalizeProjectState(state) }));
-    if (state === 'reference') {
-      setReferenceProjectId(projectId);
+    const normalized = normalizeProjectState(state);
+    setProjectStates((current) => ({ ...current, [projectId]: normalized }));
+    if (projectId === referenceProjectId && !TRACKED_PROJECT_STATES.has(normalized)) {
+      const fallback = projects.find((project) => project.id !== projectId);
+      setReferenceProjectId(fallback?.id ?? '');
     }
   };
   const commitCandidateStates = (statesByProject) => {
@@ -3145,7 +4036,7 @@ export default function App() {
   const deferCandidates = () => {
     setProjectStates((current) => ({
       ...current,
-      ...Object.fromEntries(candidateProjects.map((project) => [project.id, 'sleeping'])),
+      ...Object.fromEntries(candidateProjects.map((project) => [project.id, 'ignored'])),
     }));
   };
   const referenceProject = useMemo(() => {
@@ -3177,6 +4068,9 @@ export default function App() {
       setProjectDrawerOpen(true);
     });
   };
+  const attachLiveUrl = (project) => {
+    openProjectDrawer(project, 'settings');
+  };
   const closeProjectDrawer = () => {
     if (projectCloseTimer.current) {
       window.clearTimeout(projectCloseTimer.current);
@@ -3196,48 +4090,39 @@ export default function App() {
       : 0;
     return { totalProjects: projects.length, riskCount, driftCount, dirtyCount, avgReadiness, signalCount: signalItems.length };
   }, [projects, driftMap, signalItems.length]);
-  const statSummaries = useMemo(() => statBreakdown(projects, driftMap), [projects, driftMap]);
   const emptyWorkspaceTitle = allProjects.length ? 'No projects selected' : 'No projects found';
   const emptyWorkspaceDetail = allProjects.length
-    ? 'Finish setup with tracked projects, or reopen Settings to move sleeping candidates into the workspace map.'
+    ? 'Finish setup with active projects, or reopen Settings to move hidden projects into the workspace map.'
     : 'The workspace scan is live, but it did not include any projects. Try a broader root folder or add one manually.';
   const glossaryHelp = {
     title: 'Lens glossary',
     body: [
       'Risk: local hygiene evidence from workspace checks.',
       'Drift: factual differences from the selected reference project.',
-      'Setup readiness: checklist coverage for agent and human handoff.',
+      'Setup readiness: checklist coverage for whether projects are easy to run and understand.',
       'Dirty worktree: Git reports uncommitted local changes.',
       'Scanner evidence: observed local files or Git metadata; read-only.',
     ].join('\n'),
   };
 
   return (
-    <div className="aperture-app flex h-screen bg-slate-950 font-sans text-slate-300 selection:bg-indigo-500/30">
-      <Sidebar
-        activeSection={activeSection}
-        collapsed={sidebarCollapsed}
-        onSectionChange={showSection}
-        onToggleCollapsed={() => setSidebarCollapsed((value) => !value)}
+    <div className="aperture-app h-screen bg-slate-950 font-sans text-slate-300 selection:bg-indigo-500/30">
+      <AppHeader
+        addProjectOpen={addProjectOpen}
+        onToggleAddProject={() => setAddProjectOpen((value) => !value)}
+        theme={theme}
+        onThemeChange={setTheme}
+        settingsOpen={settingsOpen}
+        onOpenSettings={openSettings}
       />
-      <main className="flex flex-1 flex-col overflow-hidden">
-        <header className="sticky top-0 z-[100] flex min-h-20 flex-wrap items-center justify-between gap-4 border-b border-slate-800 bg-slate-950/50 px-4 backdrop-blur-md md:px-8">
-          <div className="flex flex-1 items-center gap-3">
-            <div className="text-xs font-black uppercase tracking-[0.28em] text-indigo-300">Aperture</div>
-          </div>
-          <AddProjectButton
-            open={addProjectOpen}
-            onClick={() => setAddProjectOpen((value) => !value)}
-          />
-          <ThemeSwitcher
-            theme={theme}
-            onThemeChange={setTheme}
-          />
-          <SettingsButton
-            open={settingsOpen}
-            onClick={openSettings}
-          />
-        </header>
+      <div className="app-frame">
+        <Sidebar
+          activeSection={activeSection}
+          collapsed={sidebarCollapsed}
+          onSectionChange={showSection}
+          onToggleCollapsed={() => setSidebarCollapsed((value) => !value)}
+        />
+        <main className="flex flex-1 flex-col overflow-hidden">
         <div className="flex-1 space-y-10 overflow-y-auto p-4 custom-scrollbar md:p-8">
           {dataStatus === 'loading' && !manualProjects.length && <ApertureAnalyzer />}
 
@@ -3263,23 +4148,6 @@ export default function App() {
                 />
               )}
 
-              {activeSection === 'workspace' && (
-                <WorkspaceView
-                  stats={stats}
-                  statSummaries={statSummaries}
-                  workspaceRootLabel={workspaceRootLabel}
-                  schemaVersion={scan?.schemaVersion}
-                  referenceProject={referenceProject}
-                  hasKnownProjects={allProjects.length > 0}
-                  onShowProjects={() => showSection('projects')}
-                  onOpenBrief={openBrief}
-                  onOpenSettings={openSettings}
-                  onShowScannerHelp={handleShowScannerHelp}
-                  onAddManualProject={() => setManualProjectFormOpen(true)}
-                  glossaryHelp={glossaryHelp}
-                />
-              )}
-
               {activeSection === 'brief' && (
                 <BriefView
                   projects={projects}
@@ -3294,20 +4162,35 @@ export default function App() {
                 />
               )}
 
+              {activeSection === 'live' && (
+                <LiveView
+                  projects={projects}
+                  liveLinks={projectLiveLinks}
+                  onOpenProject={openProjectDrawer}
+                  onAttachUrl={attachLiveUrl}
+                  onToggleLiveChecklist={toggleProjectLiveChecklist}
+                  onApplyLiveScan={applyProjectLiveScan}
+                  hasKnownProjects={allProjects.length > 0}
+                  onOpenSettings={openSettings}
+                  onShowScannerHelp={handleShowScannerHelp}
+                  onAddManualProject={() => setManualProjectFormOpen(true)}
+                />
+              )}
+
               {activeSection === 'projects' && (
                 <section>
                   <div className="mb-6 flex flex-col justify-between gap-4 md:flex-row md:items-center">
                     <div>
-                      <div className="section-kicker">Projects</div>
                       <h2 className="flex items-center gap-3 text-2xl font-black tracking-tight text-slate-100">
-                        Project lenses
-                        <span className="rounded bg-slate-800 px-2 py-0.5 text-[10px] uppercase tracking-tighter text-slate-500">Inventory</span>
+                        Projects
                         <InfoPopover {...glossaryHelp} />
                       </h2>
-                      <p className="mt-1 text-sm italic text-slate-500">Open a project to inspect overview, signals, drift, and handoff context.</p>
+                      <p className="mt-1 text-sm italic text-slate-500">Mapped local workspace from {workspaceRootLabel}.</p>
                     </div>
                     <div className="text-xs font-bold uppercase tracking-widest text-slate-500">{projects.length} mapped</div>
                   </div>
+
+                  <WorkspaceSignalStrip stats={stats} />
 
                   {projects.length > 0 ? (
                     <div className="grid grid-cols-1 gap-6 md:grid-cols-2 2xl:grid-cols-3">
@@ -3318,6 +4201,8 @@ export default function App() {
                           drift={driftMap[project.id] ?? []}
                           isReference={project.id === referenceProject?.id}
                           onSelect={openProjectDrawer}
+                          onRefreshScan={refreshScanData}
+                          scanRefreshStatus={scanRefreshStatus}
                         />
                       ))}
                     </div>
@@ -3360,7 +4245,8 @@ export default function App() {
             </>
           )}
         </div>
-      </main>
+        </main>
+      </div>
 
       <ManualProjectDrawer
         open={manualProjectFormOpen}
@@ -3392,6 +4278,10 @@ export default function App() {
           drift={driftMap[selectedProject.id] ?? []}
           referenceProject={referenceProject}
           isReference={selectedProject?.id === referenceProject?.id}
+          liveLink={projectLiveLinks[selectedProject.id]}
+          onSaveLiveLink={saveProjectLiveLink}
+          onClearLiveLink={clearProjectLiveLink}
+          onToggleLiveChecklist={toggleProjectLiveChecklist}
           initialTab={projectDrawerInitialTab}
           onRefreshScan={refreshScanData}
           scanRefreshStatus={scanRefreshStatus}
