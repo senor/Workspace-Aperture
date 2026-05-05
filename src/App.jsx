@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Activity,
   AlertTriangle,
@@ -1437,20 +1438,58 @@ const createLineBreaks = (text) => String(text)
 
 const InfoPopover = ({ title, body, align = 'left', kind = 'question', stopClick = true }) => {
   const Icon = kind === 'info' ? Info : CircleHelp;
+  const triggerRef = useRef(null);
+  const [open, setOpen] = useState(false);
+  const [panelStyle, setPanelStyle] = useState(null);
+
+  useEffect(() => {
+    if (!open) return undefined;
+
+    const positionPanel = () => {
+      const rect = triggerRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const width = Math.min(280, Math.max(220, window.innerWidth - 24));
+      const leftTarget = align === 'right' ? rect.right - width : rect.left;
+      setPanelStyle({
+        '--info-popover-width': `${width}px`,
+        left: `${Math.min(Math.max(12, leftTarget), window.innerWidth - width - 12)}px`,
+        top: `${Math.min(rect.bottom + 9, window.innerHeight - 24)}px`,
+      });
+    };
+
+    positionPanel();
+    window.addEventListener('resize', positionPanel);
+    window.addEventListener('scroll', positionPanel, true);
+    return () => {
+      window.removeEventListener('resize', positionPanel);
+      window.removeEventListener('scroll', positionPanel, true);
+    };
+  }, [align, open]);
+
+  const panel = open && panelStyle ? createPortal(
+    <span className={`info-popover__panel info-popover__panel--${align} is-open`} role="tooltip" style={panelStyle}>
+      <span className="info-popover__title">{title}</span>
+      <span className="info-popover__body">{createLineBreaks(body)}</span>
+    </span>,
+    document.body,
+  ) : null;
+
   return (
   <span className={`info-popover info-popover--${kind}`} onClick={stopClick ? (event) => event.stopPropagation() : undefined}>
     <span
+      ref={triggerRef}
       className="info-popover__trigger"
       tabIndex={0}
       role="button"
       aria-label={`${title}: ${String(body).replace(/\n/g, ' ')}`}
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+      onFocus={() => setOpen(true)}
+      onBlur={() => setOpen(false)}
     >
       <Icon size={13} />
     </span>
-    <span className={`info-popover__panel info-popover__panel--${align}`} role="tooltip">
-      <span className="info-popover__title">{title}</span>
-      <span className="info-popover__body">{createLineBreaks(body)}</span>
-    </span>
+    {panel}
   </span>
   );
 };
@@ -1646,7 +1685,7 @@ const BriefMetricButton = ({ icon: Icon, label, value, detail, onClick }) => (
   </button>
 );
 
-const CopyableHandoff = ({ text, label = 'brief text' }) => {
+const CopyableHandoff = ({ text, label = 'brief text', heading = null }) => {
   const [copied, setCopied] = useState(false);
   const copyText = async () => {
     try {
@@ -1660,10 +1699,13 @@ const CopyableHandoff = ({ text, label = 'brief text' }) => {
 
   return (
     <div className="copyable-handoff">
-      <button type="button" className="copyable-handoff__copy" onClick={copyText}>
-        <Copy size={14} />
-        {copied ? 'Copied' : `Copy ${label}`}
-      </button>
+      <div className="copyable-handoff__bar">
+        {heading}
+        <button type="button" className="copyable-handoff__copy" onClick={copyText}>
+          <Copy size={14} />
+          {copied ? 'Copied' : `Copy ${label}`}
+        </button>
+      </div>
       <pre>{text}</pre>
     </div>
   );
@@ -2820,7 +2862,7 @@ const AgentContextPanel = ({ project }) => {
             icon={CheckCircle2}
             title="Agent instructions are present"
             detail="Agents have project-specific context before making changes."
-            meta={`Found: ${summary.files.join(', ')}`}
+            meta={`Found: ${summary.files.slice(0, 3).join(', ')}${summary.files.length > 3 ? `, +${summary.files.length - 3} more` : ''}`}
           />
           {summary.hasSkills && (
             <ProjectSignalLine
@@ -2828,7 +2870,6 @@ const AgentContextPanel = ({ project }) => {
               icon={FileJson}
               title={`${summary.skills.length} repo-local skill${summary.skills.length === 1 ? '' : 's'} detected`}
               detail="Aperture surfaces these as read-only project context; editing and execution stay in the IDE or agent tool."
-              meta={summary.skills.map((skill) => skill.path ?? skill.name).filter(Boolean).join(', ')}
             />
           )}
         </div>
@@ -2839,7 +2880,7 @@ const AgentContextPanel = ({ project }) => {
             icon={AlertTriangle}
             title="No agent instructions"
             detail="Agents will enter this repo without project-specific rules, architecture notes, test expectations, or safe-change boundaries."
-            meta="Without agent instructions, a coding agent has to infer conventions from the repo, increasing the chance of wrong commands, misplaced files, skipped tests, or changes that violate local patterns."
+            meta="Add an AGENTS.md-style file with project rules, commands, and safe-change boundaries."
           />
           <CopyStarterAgentsButton />
           {summary.hasSkills && (
@@ -2848,12 +2889,211 @@ const AgentContextPanel = ({ project }) => {
               icon={FileJson}
               title={`${summary.skills.length} repo-local skill${summary.skills.length === 1 ? '' : 's'} detected`}
               detail="Skills are visible, but this project still lacks general agent instructions."
-              meta={summary.skills.map((skill) => skill.path ?? skill.name).filter(Boolean).join(', ')}
             />
           )}
         </div>
       )}
     </section>
+  );
+};
+
+const SignalDisclosure = ({ title, count, children, defaultOpen = false }) => (
+  <details className="signal-disclosure" open={defaultOpen}>
+    <summary>
+      <span>{title}</span>
+      {count !== undefined && <strong>{count}</strong>}
+    </summary>
+    <div className="signal-disclosure__body">
+      {children}
+    </div>
+  </details>
+);
+
+const setupActionLabel = (label = '') => {
+  const normalized = String(label).replace(/\s+present\b/i, '').trim();
+  if (!normalized) return 'Complete setup item';
+  return `Add ${normalized.charAt(0).toLowerCase()}${normalized.slice(1)}`;
+};
+
+const ProjectSignalsDashboard = ({ project, checks, launchRisks, risks, normalChecks, skippedChecks }) => {
+  const setup = readinessSummary(project.aiReadiness);
+  const agentContext = agentContextSummary(project);
+  const failedChecks = setup.failed;
+  const prioritySignals = [
+    ...failedChecks.slice(0, 2).map((check) => ({
+      key: `setup-${check.id}`,
+      tone: 'warning',
+      icon: AlertTriangle,
+      eyebrow: 'Setup',
+      title: setupActionLabel(check.label),
+      detail: 'Complete this before relying on handoff or automation.',
+    })),
+    ...(!agentContext.hasInstructions ? [{
+      key: 'agent-context',
+      tone: 'warning',
+      icon: FileJson,
+      eyebrow: 'Agent context',
+      title: 'Add project instructions',
+      detail: 'Capture repo rules, commands, and safe-change boundaries.',
+    }] : []),
+    ...launchRisks.slice(0, 2).map((risk) => ({
+      key: `launch-${risk.id}-${risk.detail}`,
+      tone: severityTones[risk.severity] || 'info',
+      icon: AlertTriangle,
+      eyebrow: riskCategory(risk),
+      title: risk.title,
+      detail: risk.fix || risk.detail,
+      side: risk.severity,
+    })),
+    ...risks.slice(0, 2).map((risk) => ({
+      key: `risk-${risk.id}-${risk.detail}`,
+      tone: severityTones[risk.severity] || 'info',
+      icon: ShieldAlert,
+      eyebrow: riskCategory(risk),
+      title: risk.title,
+      detail: risk.detail,
+    })),
+  ].slice(0, 4);
+
+  return (
+    <div className="project-signals">
+      <section className="signals-overview">
+        <div className="signals-overview__card signals-overview__card--setup">
+          <Cpu size={16} />
+          <span>Setup</span>
+          <strong>{setup.label}</strong>
+          <div className="project-drawer__meter">
+            <div style={{ width: `${project.aiReadiness?.score ?? 0}%` }} />
+          </div>
+        </div>
+        <div className="signals-overview__card">
+          <FileJson size={16} />
+          <span>Agent context</span>
+          <strong>{agentContext.hasInstructions ? `${agentContext.files.length} file${agentContext.files.length === 1 ? '' : 's'}` : 'Missing'}</strong>
+          <small>{agentContext.hasSkills ? `${agentContext.skills.length} skill${agentContext.skills.length === 1 ? '' : 's'} visible` : 'No repo-local skills'}</small>
+        </div>
+        <div className="signals-overview__card">
+          <ShieldAlert size={16} />
+          <span>Findings</span>
+          <strong>{launchRisks.length + risks.length}</strong>
+          <small>{launchRisks.length} before sharing · {risks.length} hygiene</small>
+        </div>
+      </section>
+
+      <section>
+        <div className="project-drawer__section-heading project-drawer__section-heading--subtle">
+          <h3><Zap size={14} /> Next Actions</h3>
+          <span>{prioritySignals.length}</span>
+        </div>
+        <div className="project-drawer__stack">
+          {prioritySignals.length > 0 ? prioritySignals.map((signal) => (
+            <ProjectSignalLine
+              key={signal.key}
+              tone={signal.tone}
+              icon={signal.icon}
+              eyebrow={signal.eyebrow}
+              title={signal.title}
+              detail={signal.detail}
+              side={signal.side}
+            />
+          )) : (
+            <ProjectSignalLine
+              tone="success"
+              icon={CheckCircle2}
+              title="No priority signal needs action."
+              detail="Setup, agent context, and hygiene checks are currently quiet."
+            />
+          )}
+        </div>
+      </section>
+
+      <AgentContextPanel project={project} />
+
+      <section className="signals-evidence">
+        <div className="project-drawer__section-heading project-drawer__section-heading--subtle">
+          <h3><CircleHelp size={14} /> Evidence</h3>
+        </div>
+        <SignalDisclosure title="Setup checklist" count={`${setup.passed}/${setup.total || checks.length}`} defaultOpen={failedChecks.length > 0}>
+          <div className="project-drawer__check-grid project-drawer__check-grid--compact">
+            {checks.length > 0 ? checks.map((check) => (
+              <div key={check.id} className="project-drawer__check">
+                {check.passed ? <CheckCircle2 size={15} className="text-emerald-400" /> : <AlertTriangle size={15} className="text-amber-400" />}
+                <span>{check.label}</span>
+              </div>
+            )) : <span className="project-drawer__muted-line">No setup signal details in this dataset.</span>}
+          </div>
+        </SignalDisclosure>
+
+        <SignalDisclosure title="Fix before sharing" count={launchRisks.length} defaultOpen={launchRisks.length > 0}>
+          <div className="project-drawer__stack">
+            {launchRisks.length > 0 ? launchRisks.map((risk) => (
+              <ProjectSignalLine
+                key={`${risk.id}-${risk.detail}`}
+                tone={severityTones[risk.severity] || 'info'}
+                icon={AlertTriangle}
+                eyebrow={riskCategory(risk)}
+                title={risk.title}
+                detail={risk.detail}
+                meta={risk.fix}
+                side={risk.severity}
+              />
+            )) : (
+              <ProjectSignalLine tone="success" icon={CheckCircle2} title="No stack-aware launch findings detected." />
+            )}
+          </div>
+        </SignalDisclosure>
+
+        <SignalDisclosure title="Hygiene signals" count={risks.length}>
+          <div className="project-drawer__stack">
+            {risks.length > 0 ? risks.map((risk) => (
+              <ProjectSignalLine
+                key={`${risk.id}-${risk.detail}`}
+                tone={severityTones[risk.severity] || 'info'}
+                icon={ShieldAlert}
+                eyebrow={riskCategory(risk)}
+                title={risk.title}
+                detail={risk.detail}
+                meta={riskWhyShown(risk)}
+              />
+            )) : (
+              <ProjectSignalLine tone="success" icon={CheckCircle2} title={`No hygiene findings from ${SCANNER_CHECK_SCOPE}.`} />
+            )}
+          </div>
+        </SignalDisclosure>
+
+        <SignalDisclosure title="Normalized signals" count={normalChecks.length}>
+          <div className="project-drawer__stack">
+            {normalChecks.length > 0 ? normalChecks.map((check) => (
+              <ProjectSignalLine
+                key={check.title}
+                tone="success"
+                icon={CheckCircle2}
+                title={check.title}
+                detail={check.detail}
+              />
+            )) : (
+              <ProjectSignalLine tone="info" icon={CheckCircle2} title="No stack-specific normalizations apply yet." />
+            )}
+          </div>
+        </SignalDisclosure>
+
+        <SignalDisclosure title="Skipped checks" count={skippedChecks.length}>
+          <div className="project-drawer__stack">
+            {skippedChecks.length > 0 ? skippedChecks.map((check) => (
+              <ProjectSignalLine
+                key={check.id}
+                tone="info"
+                icon={CircleHelp}
+                title={check.title}
+                detail={check.reason}
+              />
+            )) : (
+              <ProjectSignalLine tone="success" icon={CheckCircle2} title="No checks were skipped for this project profile." />
+            )}
+          </div>
+        </SignalDisclosure>
+      </section>
+    </div>
   );
 };
 
@@ -3220,142 +3460,21 @@ const ProjectDrawer = ({
 
         <div className="project-drawer__body custom-scrollbar">
           {activeTab === 'signals' ? (
-            <>
-              <section className="project-drawer__signal-block project-drawer__signal-block--setup">
-                <div className="project-drawer__section-heading">
-                  <h3><Cpu size={14} /> Setup Signals</h3>
-                  <span>{readinessSummary(project.aiReadiness).label}</span>
-                </div>
-                <div className="project-drawer__meter">
-                  <div style={{ width: `${project.aiReadiness?.score ?? 0}%` }} />
-                </div>
-                <div className="project-drawer__check-grid">
-                  {checks.length > 0 ? checks.map((check) => (
-                    <div key={check.id} className="project-drawer__check">
-                      {check.passed ? <CheckCircle2 size={15} className="text-emerald-400" /> : <AlertTriangle size={15} className="text-amber-400" />}
-                      <span>{check.label}</span>
-                    </div>
-                  )) : <span className="project-drawer__muted-line">No setup signal details in this dataset.</span>}
-                </div>
-              </section>
-
-              <AgentContextPanel project={project} />
-
-              <section>
-                <div className="project-drawer__section-heading project-drawer__section-heading--subtle">
-                  <h3>
-                    <AlertTriangle size={14} /> Fix Before Sharing
-                    <InfoPopover {...briefExplainers['Launch hygiene']} align="right" />
-                  </h3>
-                  <span>{launchRisks.length} finding{launchRisks.length === 1 ? '' : 's'}</span>
-                </div>
-                <div className="project-drawer__stack">
-                  {launchRisks.length > 0 ? launchRisks.map((risk) => (
-                    <ProjectSignalLine
-                      key={`${risk.id}-${risk.detail}`}
-                      tone={severityTones[risk.severity] || 'info'}
-                      icon={AlertTriangle}
-                      eyebrow={riskCategory(risk)}
-                      title={risk.title}
-                      detail={risk.detail}
-                      meta={[
-                        `Confidence: ${risk.confidence ?? 'medium'}`,
-                        risk.evidence?.length ? `Evidence: ${risk.evidence.join(', ')}` : null,
-                        risk.fix ? `Fix: ${risk.fix}` : null,
-                      ].filter(Boolean).join(' · ')}
-                      side={risk.severity}
-                    />
-                  )) : (
-                    <ProjectSignalLine
-                      tone="success"
-                      icon={CheckCircle2}
-                      title="No stack-aware launch findings detected."
-                    />
-                  )}
-                </div>
-              </section>
-
-              <section>
-                <div className="project-drawer__section-heading project-drawer__section-heading--subtle">
-                  <h3><ShieldAlert size={14} /> Hygiene Signals</h3>
-                  <span>{risks.length}</span>
-                </div>
-                <div className="project-drawer__stack">
-                  {risks.length > 0 ? risks.map((risk) => (
-                    <ProjectSignalLine
-                      key={`${risk.id}-${risk.detail}`}
-                      tone={severityTones[risk.severity] || 'info'}
-                      icon={ShieldAlert}
-                      eyebrow={riskCategory(risk)}
-                      title={risk.title}
-                      detail={risk.detail}
-                      meta={riskWhyShown(risk)}
-                    />
-                  )) : (
-                    <ProjectSignalLine
-                      tone="success"
-                      icon={CheckCircle2}
-                      title={`No hygiene findings from ${SCANNER_CHECK_SCOPE}.`}
-                    />
-                  )}
-                </div>
-              </section>
-
-              <section>
-                <div className="project-drawer__section-heading project-drawer__section-heading--subtle">
-                  <h3><CheckCircle2 size={14} /> Normalized Signals</h3>
-                </div>
-                <div className="project-drawer__stack">
-                  {normalChecks.length > 0 ? normalChecks.map((check) => (
-                    <ProjectSignalLine
-                      key={check.title}
-                      tone="success"
-                      icon={CheckCircle2}
-                      title={check.title}
-                      detail={check.detail}
-                    />
-                  )) : (
-                    <ProjectSignalLine
-                      tone="info"
-                      icon={CheckCircle2}
-                      title="No stack-specific normalizations apply yet."
-                    />
-                  )}
-                </div>
-              </section>
-
-              <section>
-                <div className="project-drawer__section-heading project-drawer__section-heading--subtle">
-                  <h3>
-                    <CircleHelp size={14} /> Skipped Checks
-                    <InfoPopover {...briefExplainers['Skipped checks']} align="right" />
-                  </h3>
-                </div>
-                <div className="project-drawer__stack">
-                  {skippedChecks.length > 0 ? skippedChecks.map((check) => (
-                    <ProjectSignalLine
-                      key={check.id}
-                      tone="info"
-                      icon={CircleHelp}
-                      title={check.title}
-                      detail={check.reason}
-                    />
-                  )) : (
-                    <ProjectSignalLine
-                      tone="success"
-                      icon={CheckCircle2}
-                      title="No checks were skipped for this project profile."
-                    />
-                  )}
-                </div>
-              </section>
-            </>
+            <ProjectSignalsDashboard
+              project={project}
+              checks={checks}
+              launchRisks={launchRisks}
+              risks={risks}
+              normalChecks={normalChecks}
+              skippedChecks={skippedChecks}
+            />
           ) : activeTab === 'brief' ? (
             <section className="project-drawer__panel">
-              <div className="project-drawer__section-heading project-drawer__section-heading--subtle">
-                <h3><FileJson size={14} /> Project Brief</h3>
-              </div>
-              <CopyableHandoff text={briefText} label="project brief" />
+              <CopyableHandoff
+                text={briefText}
+                label="project brief"
+                heading={<h3 className="copyable-handoff__title"><FileJson size={14} /> Project Brief</h3>}
+              />
             </section>
           ) : activeTab === 'settings' ? (
             <>
@@ -3592,19 +3711,22 @@ const sourceStateLabel = (project) => {
   return 'Clean';
 };
 
+const summarizeChangedGroups = (changes = []) => {
+  if (!changes.length) return 'No local changes';
+  const groups = changes.reduce((totals, change) => {
+    const label = gitStatusMeta(change.status).label;
+    return { ...totals, [label]: (totals[label] ?? 0) + 1 };
+  }, {});
+  return Object.entries(groups).map(([label, count]) => `${count} ${label.toLowerCase()}`).join(' · ');
+};
+
 const ProjectSourceSignal = ({ project, onRefreshScan, refreshStatus }) => {
   const [expandedCommitId, setExpandedCommitId] = useState(null);
   const changes = gitChanges(project);
   const commits = gitCommits(project);
+  const visibleCommits = commits.slice(0, 10);
   const hasStaleGitSnapshot = project.git?.isRepo && !hasGitSnapshot(project);
   const hasUncapturedDirtyState = project.git?.dirty && changes.length === 0;
-  const changedGroups = changes.reduce((groups, change) => {
-    const meta = gitStatusMeta(change.status);
-    return {
-      ...groups,
-      [meta.label]: [...(groups[meta.label] ?? []), { ...change, meta }],
-    };
-  }, {});
 
   return (
     <div className="source-signal">
@@ -3637,35 +3759,12 @@ const ProjectSourceSignal = ({ project, onRefreshScan, refreshStatus }) => {
             <span>Last commit</span>
             <strong>{formatDate(sourceActivityDate(project))}</strong>
           </div>
-        </div>
-      </section>
-
-      <section className="source-zone">
-        <div className="source-zone__heading">
-          <span>Change Lens</span>
-          <small>{project.name}</small>
-        </div>
-        {!project.git?.isRepo ? (
-          <div className="source-empty">This project is not detected as a Git repository.</div>
-        ) : changes.length > 0 ? (
-          <div className="source-change-groups">
-            {Object.entries(changedGroups).map(([label, items]) => (
-              <div key={label} className="source-change-group">
-                <div className="source-change-group__label">{label} <span>{items.length}</span></div>
-                {items.map((change) => (
-                  <button
-                    key={`${change.status}-${change.path}`}
-                    type="button"
-                    className={`source-change source-change--${change.meta.tone}`}
-                  >
-                    <span>{basename(change.path)}</span>
-                    <small>{dirname(change.path)}</small>
-                  </button>
-                ))}
-              </div>
-            ))}
+          <div>
+            <span>Local changes</span>
+            <strong>{summarizeChangedGroups(changes)}</strong>
           </div>
-        ) : hasStaleGitSnapshot || hasUncapturedDirtyState ? (
+        </div>
+        {(hasStaleGitSnapshot || hasUncapturedDirtyState) && (
           <div className="source-empty source-empty--dirty">
             <strong>{hasStaleGitSnapshot ? 'This Git snapshot is stale and missing changed-file/history detail.' : 'Git reports uncommitted changes, but this scan did not include the changed-file list.'}</strong>
             <span>Refresh the workspace scan from this dev server, or run <code>npm run scan</code> in the workspace.</span>
@@ -3676,19 +3775,17 @@ const ProjectSourceSignal = ({ project, onRefreshScan, refreshStatus }) => {
               <em>{refreshStatus === 'updated' ? 'Git snapshot refreshed.' : refreshStatus === 'missing' ? 'No workspace scan found.' : refreshStatus === 'error' ? 'Rescan failed.' : 'Waiting for workspace scan.'}</em>
             </div>
           </div>
-        ) : (
-          <div className="source-empty">No local changes detected.</div>
         )}
       </section>
 
       <section className="source-zone source-zone--pulse">
         <div className="source-zone__heading">
           <span>Pulse Graph</span>
-          <small>{formatDate(sourceActivityDate(project))}</small>
+          <small>Last {Math.min(10, commits.length)} · {formatDate(sourceActivityDate(project))}</small>
         </div>
-        {commits.length > 0 ? (
+        {visibleCommits.length > 0 ? (
           <div className="source-pulse">
-            {commits.map((commit, index) => (
+            {visibleCommits.map((commit, index) => (
               <button
                 key={`${commit.sha}-${index}`}
                 type="button"
